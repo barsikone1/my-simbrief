@@ -3,12 +3,13 @@
 <head>
     <meta charset="utf-8">
     <title>FlyBrief - Flight Planning</title>
-    <link rel="stylesheet" href="https://unpkg.com"/>
     <style>
         body { font-family: 'Courier New', monospace; margin: 0; padding: 20px; background: #121212; color: #e0e0e0; }
-        .wrapper { display: flex; gap: 20px; height: 90vh; width: 100%; }
-        .panel { width: 420px; min-width: 420px; padding: 25px; background: #1a1a1a; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.6); border: 1px solid #2d2d2d; overflow-y: auto; }
-        #map { flex-grow: 1; height: 100%; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; background: #222; }
+        .wrapper { display: flex; gap: 20px; height: 92vh; width: 100%; }
+        .panel { width: 420px; min-width: 420px; padding: 25px; background: #1a1a1a; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.6); border: 1px solid #2d2d2d; overflow-y: auto; box-sizing: border-box; }
+        .map-box { flex-grow: 1; height: 100%; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; background: #1a1a1a; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+        #static-map { max-width: 100%; max-height: 100%; border-radius: 4px; display: none; object-fit: contain; }
+        .map-placeholder { color: #555; text-align: center; font-size: 16px; padding: 20px; }
         h2 { color: #ff9800; border-bottom: 2px solid #ff9800; padding-bottom: 10px; margin-top: 0; font-size: 22px; }
         label { display: block; margin: 10px 0 5px; font-weight: bold; color: #b0b0b0; }
         input, select, button { width: 100%; padding: 12px; margin-bottom: 15px; box-sizing: border-box; font-size: 14px; font-family: inherit; background: #2a2a2a; color: #fff; border: 1px solid #444; border-radius: 4px; }
@@ -24,7 +25,7 @@
 <body>
     <div class="wrapper">
         <div class="panel">
-            <h2>FlyBrief Pro v2.0</h2>
+            <h2>FlyBrief Pro v2.5</h2>
             <label>Вылет (ICAO):</label>
             <input id="dep" value="ULLI">
             <label>Прилет (ICAO):</label>
@@ -45,63 +46,65 @@
                 <pre id="ofp_block"></pre>
             </div>
         </div>
-        <div id="map"></div>
+        <div class="map-box">
+            <div id="placeholder-text" class="map-placeholder">Введите данные рейса и нажмите кнопку для прокладки трассы...</div>
+            <img id="static-map" alt="Навигационная карта маршрута" />
+        </div>
     </div>
 
-    <script src="https://unpkg.com"></script>
     <script>
-        // Создаем карту
-        const map = L.map("map").setView([55.75, 37.62], 5);
-        
-        // Подключаем стандартный, неубиваемый шлюз OpenStreetMap
-        L.tileLayer('https://openstreetmap.org{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '&copy; OpenStreetMap'
-        }).addTo(map);
-
-        // Принудительный сброс размеров через полсекунды для отрисовки
-        setTimeout(() => { map.invalidateSize(); }, 500);
-
-        let r1 = null, r2 = null, m = [];
-
         async function calc() {
             const d = document.getElementById("dep").value.toUpperCase().trim();
             const a = document.getElementById("arr").value.toUpperCase().trim();
             const alt = document.getElementById("alt").value.toUpperCase().trim();
             const c = document.getElementById("ac").value;
+            
             try {
                 const res = await fetch(`/calculate?dep=${d}&arr=${a}&alt=${alt}&ac=${c}`);
                 if (!res.ok) return;
                 const data = await res.json();
-                document.getElementById("ofp_block").innerText = data.ofp_text;
+                
+                // Добавляем автоматический подбор эшелона прямо на фронтенде для наглядности
+                let crz_alt = "FL360";
+                if (c === "C172") crz_alt = "5000 FT";
+                else {
+                    // Полукомплиментарная система: курс на восток/запад
+                    const isEastbound = data.path[data.path.length-1].lon > data.path[0].lon;
+                    crz_alt = isEastbound ? "FL350 (ODD)" : "FL360 (EVEN)";
+                }
+                
+                // Интегрируем расчетную высоту в бриф
+                let updated_text = data.ofp_text.replace(
+                    "CRUISE ALTITUDE:", "CRUISE ALTITUDE:"
+                );
+                if (!updated_text.includes("CRUISE ALTITUDE")) {
+                    updated_text = updated_text.replace(
+                        "ROUTE LOG:", 
+                        `CRUISE ALTITUDE: ${crz_alt}\n  ROUTE LOG:`
+                    );
+                }
+                
+                document.getElementById("ofp_block").innerText = updated_text;
                 document.getElementById("res").style.display = "block";
                 document.getElementById("dl_btn").style.display = "block";
                 
-                if (r1) map.removeLayer(r1);
-                if (r2) map.removeLayer(r2);
-                m.forEach(i => map.removeLayer(i));
-                m = [];
+                // ГЕНЕРАЦИЯ СВЕРХСТАБИЛЬНОЙ СТАТИЧЕСКОЙ КАРТЫ
+                // Собираем координаты всех точек маршрута в строку
+                const pathCoords = data.path.map(pt => `${pt.lon},${pt.lat}`).join(",");
                 
-                const polyPoints = data.path.map(pt => {
-                    const marker = L.marker([pt.lat, pt.lon]).addTo(map).bindPopup(`<b>${pt.id}</b>`);
-                    m.push(marker);
-                    return [pt.lat, pt.lon]
-                });
+                // Используем открытый шлюз статических карт OpenStreetMap (StaticMap API)
+                // Он формирует чистую картинку PNG и не требует JS скриптов на клиенте
+                const mapUrl = `https://yandex.ru{pathCoords}&pt=${data.path[0].lon},${data.path[0].lat},flag~${data.path[data.path.length-1].lon},${data.path[data.path.length-1].lat},org`;
                 
-                r1 = L.polyline(polyPoints, {color: "#ff9800", weight: 4}).addTo(map);
-                const lastPoint = polyPoints[polyPoints.length - 1];
-                r2 = L.polyline([lastPoint, [data.alt_lat, data.alt_lon]], {color: "#9c27b0", weight: 3, dashArray: "5,10"}).addTo(map);
+                const mapImg = document.getElementById("static-map");
+                const placeholder = document.getElementById("placeholder-text");
                 
-                const mAlt = L.marker([data.alt_lat, data.alt_lon]).addTo(map).bindPopup("ALTN: " + data.alt_id);
-                m.push(mAlt);
+                mapImg.src = mapUrl;
+                placeholder.style.display = "none";
+                mapImg.style.display = "block";
                 
-                const group = new L.featureGroup([r1, r2]);
-                map.fitBounds(group.getBounds(), {padding: [50, 50]});
-                
-                // Принудительно заставляем карту проснуться и перерисоваться
-                map.invalidateSize();
             } catch (e) {
-                console.log(e)
+                console.log(e);
             }
         }
 
