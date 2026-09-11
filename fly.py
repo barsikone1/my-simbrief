@@ -1,5 +1,5 @@
-# FlyBrief main.py v0.7.0
-# X-Plane 12 navdata (airways/fixes/navaids) + A* по airway-графу
+# FlyBrief main.py v0.7.1
+# X-Plane 12 navdata (airways/fixes/navaids) + A* по airway-графу + OFP
 # Один файл. Зависимости: fastapi, uvicorn, стандартная библиотека.
 
 import os
@@ -16,7 +16,7 @@ from typing import Optional, List, Dict, Tuple, Any
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -24,10 +24,9 @@ from pydantic import BaseModel
 # КОНФИГ
 # =====================================================================
 
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 
 REPO_RAW = "https://raw.githubusercontent.com/barsikone1/my-simbrief/main"
-# Пробуем оба имени: .txt (как у тебя в репо) и .dat (на случай переименования)
 NAVDATA_FILES = {
     "awy":  [f"{REPO_RAW}/earth_awy.txt",  f"{REPO_RAW}/earth_awy.dat"],
     "fix":  [f"{REPO_RAW}/earth_fix.txt",  f"{REPO_RAW}/earth_fix.dat"],
@@ -46,26 +45,21 @@ CACHE_TTL_DAYS = 30
 # GLOBAL STORAGE
 # =====================================================================
 
-AIRPORTS: Dict[str, Dict[str, Any]] = {}      # ICAO -> {lat, lon, name, ...}
-RUNWAYS:  Dict[str, List[Dict[str, Any]]] = {} # ICAO -> [ {ident, lat, lon, hdg, len} ]
-NAVAIDS:  List[Dict[str, Any]] = []            # [{ident, lat, lon, type}]
-NAVAID_INDEX: Dict[str, List[int]] = {}        # ident -> indices in NAVAIDS
-NAVAID_GRAPH: Dict[int, List[Tuple[int, float]]] = {}  # idx -> [(idx, dist_nm)]
+AIRPORTS: Dict[str, Dict[str, Any]] = {}
+RUNWAYS:  Dict[str, List[Dict[str, Any]]] = {}
+NAVAIDS:  List[Dict[str, Any]] = []
+NAVAID_INDEX: Dict[str, List[int]] = {}
+NAVAID_GRAPH: Dict[int, List[Tuple[int, float]]] = {}
 
-FIX_COORDS: Dict[str, Tuple[float, float]] = {}   # IDENT -> (lat, lon)
-FIX_INDEX:  Dict[str, List[int]] = {}             # IDENT -> indices (если дубликаты)
-AWY_GRAPH:  Dict[str, List[Dict[str, Any]]] = {}  # IDENT -> [ {to, awy, d, b, t, dir} ]
+FIX_COORDS: Dict[str, Tuple[float, float]] = {}
+FIX_INDEX:  Dict[str, List[int]] = {}
+AWY_GRAPH:  Dict[str, List[Dict[str, Any]]] = {}
 AWY_EDGE_COUNT = 0
 
 XPLANE_LOADED = False
 LOAD_STATE = {
-    "airports": False,
-    "runways": False,
-    "navaids": False,
-    "xplane": False,
-    "started_at": None,
-    "finished_at": None,
-    "error": None,
+    "airports": False, "runways": False, "navaids": False, "xplane": False,
+    "started_at": None, "finished_at": None, "error": None,
 }
 
 # =====================================================================
@@ -73,12 +67,8 @@ LOAD_STATE = {
 # =====================================================================
 
 app = FastAPI(title="FlyBrief", version=APP_VERSION)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
 
 # =====================================================================
 # УТИЛИТЫ
@@ -87,7 +77,7 @@ app.add_middleware(
 def log(*a):
     print("[FlyBrief]", *a, flush=True)
 
-EARTH_R_NM = 3440.065  # радиус Земли в морских милях
+EARTH_R_NM = 3440.065
 
 def haversine_nm(lat1, lon1, lat2, lon2):
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -99,24 +89,20 @@ def haversine_nm(lat1, lon1, lat2, lon2):
 def is_cache_fresh(path: str) -> bool:
     if not os.path.exists(path):
         return False
-    age = time.time() - os.path.getmtime(path)
-    return age < CACHE_TTL_DAYS * 86400
+    return (time.time() - os.path.getmtime(path)) < CACHE_TTL_DAYS * 86400
 
 def http_get_text(url: str, timeout: int = 60) -> Optional[str]:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "FlyBrief/0.7"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = r.read()
-        try:
-            return data.decode("utf-8", errors="replace")
-        except Exception:
-            return data.decode("latin-1", errors="replace")
+        return data.decode("utf-8", errors="replace")
     except Exception as e:
         log(f"http_get_text FAIL {url}: {e}")
         return None
 
 # =====================================================================
-# AEROPORTS / RUNWAYS (OurAirports) — как было
+# OurAirports CSV
 # =====================================================================
 
 AIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
@@ -151,10 +137,8 @@ def load_airports():
         except Exception:
             continue
         result[ident] = {
-            "ident": ident,
-            "name": row.get("name", ""),
-            "lat": lat, "lon": lon,
-            "type": row.get("type", ""),
+            "ident": ident, "name": row.get("name", ""),
+            "lat": lat, "lon": lon, "type": row.get("type", ""),
             "iata": (row.get("iata_code") or "").strip().upper(),
             "iso": (row.get("iso_country") or "").strip().upper(),
             "municipality": row.get("municipality", ""),
@@ -191,10 +175,16 @@ def load_runways():
         icao = (row.get("airport_ident") or "").strip().upper()
         if not icao:
             continue
+        # левый конец
         try:
-            lat = float(row["le_latitude_deg"]); lon = float(row["le_longitude_deg"])
+            le_lat = float(row["le_latitude_deg"]); le_lon = float(row["le_longitude_deg"])
         except Exception:
-            continue
+            le_lat = le_lon = None
+        # правый конец
+        try:
+            he_lat = float(row["he_latitude_deg"]); he_lon = float(row["he_longitude_deg"])
+        except Exception:
+            he_lat = he_lon = None
         try:
             hdg = float(row.get("le_heading_degT") or 0)
         except Exception:
@@ -203,11 +193,26 @@ def load_runways():
             length = float(row.get("length_ft") or 0)
         except Exception:
             length = 0.0
-        result.setdefault(icao, []).append({
-            "ident": row.get("le_ident", ""),
-            "lat": lat, "lon": lon,
-            "hdg": hdg, "len_ft": length,
-        })
+        le_ident = (row.get("le_ident") or "").strip()
+        he_ident = (row.get("he_ident") or "").strip()
+
+        # Каждая физическая полоса имеет два конца — даём обе стороны
+        if le_ident:
+            result.setdefault(icao, []).append({
+                "ident": le_ident,
+                "lat": le_lat, "lon": le_lon,
+                "hdg": hdg, "len_ft": length,
+                "pair": he_ident,
+            })
+        if he_ident:
+            # heading правого конца: +180 от левого (нормализуем 0-360)
+            he_hdg = (hdg + 180.0) % 360.0
+            result.setdefault(icao, []).append({
+                "ident": he_ident,
+                "lat": he_lat, "lon": he_lon,
+                "hdg": he_hdg, "len_ft": length,
+                "pair": le_ident,
+            })
     RUNWAYS = result
     try:
         with open(RUNWAYS_CACHE, "w", encoding="utf-8") as f:
@@ -249,8 +254,7 @@ def load_navaids():
             continue
         result.append({
             "ident": ident, "lat": lat, "lon": lon,
-            "type": row.get("type", ""),
-            "name": row.get("name", ""),
+            "type": row.get("type", ""), "name": row.get("name", ""),
         })
     NAVAIDS = result
     NAVAID_INDEX = {}
@@ -267,30 +271,11 @@ def load_navaids():
 # =====================================================================
 # X-PLANE 12 NAVDATA
 # =====================================================================
-#
-# earth_fix.txt:  "lat lon ident"  (пробелы, ident может содержать дефис)
-#                 В начале файла строки "I" / "1100 Version ..." / пустые
-# earth_awy.txt:  fix_a lat_a lon_a fix_b lat_b lon_b airway dir base top
-#                 Пример:
-#                   07EBA DT 11 GILEX DT 11 N 1  95 245 G869
-#                 где "DT 11" — тип+высота суффикс региона, игнорируем.
-#                 Общая структура: 9 колонок:
-#                   [fix_a, reg_a, code_a, fix_b, reg_b, code_b, type, dir, base, top, awy]
-#                 Точнее: fix_a, xa, ya, fix_b, xb, yb, type(N/F), dir(1/2/3), base, top, awy
-#                 НО в реальном файле после fix идёт 2-буквенный код региона и число (11=high, 2=low),
-#                 поэтому колонки такие:
-#                   fix_a, r_a, c_a, fix_b, r_b, c_b, type, dir, base, top, awy
-# earth_nav.txt:  VOR/NDB/TACAN. Формат: code type ident name lat lon ... 
-#                 Строки начинаются с числа (2=VOR, 3=NDB, 4=ILS, 12=TACAN...).
-#                 Формат: "code name ident lat lon freq ..."
-# =====================================================================
 
-def parse_fix_line(line: str) -> Optional[Tuple[str, float, float]]:
-    """Строка earth_fix: 'lat lon IDENT' (может быть 'lat lon IDENT' через пробелы)."""
+def parse_fix_line(line: str):
     parts = line.split()
     if len(parts) < 3:
         return None
-    # Ожидаем: [lat, lon, IDENT]
     try:
         lat = float(parts[0]); lon = float(parts[1])
     except ValueError:
@@ -303,18 +288,14 @@ def parse_fix_line(line: str) -> Optional[Tuple[str, float, float]]:
     return (ident, lat, lon)
 
 def load_xplane_fix(text: str) -> int:
-    """Заполняет FIX_COORDS."""
     n = 0
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
-        # заголовки
-        if line[0] in ("I", "A", "N") and len(line) < 5:
+        if len(line) < 5 and line[0] in ("I", "A", "N"):
             continue
-        if line.startswith("1100 ") or line.startswith("Copyright") or line.startswith("Metadata"):
-            continue
-        if line.startswith("#"):
+        if line.startswith(("1100 ", "Copyright", "Metadata", "#")):
             continue
         res = parse_fix_line(line)
         if not res:
@@ -326,73 +307,48 @@ def load_xplane_fix(text: str) -> int:
         n += 1
     return n
 
-def parse_awy_line(line: str) -> Optional[Dict[str, Any]]:
-    """
-    Парсит одну строку earth_awy.
-    Ожидаемый формат (11 полей):
-      fix_a, r_a, c_a, fix_b, r_b, c_b, type, dir, base, top, awy
-    Реальный пример:
-      07EBA DT 11 GILEX DT 11 N 1  95 245 G869
-    То есть:
-      [0]=fix_a [1]=DT [2]=11 [3]=fix_b [4]=DT [5]=11 [6]=N [7]=1 [8]=95 [9]=245 [10]=G869
-    """
+def parse_awy_line(line: str):
     parts = line.split()
     if len(parts) < 11:
         return None
     fix_a = parts[0].upper()
     fix_b = parts[3].upper()
     try:
-        dirn = int(parts[7])
-        base = int(parts[8])
-        top  = int(parts[9])
+        dirn = int(parts[7]); base = int(parts[8]); top = int(parts[9])
     except ValueError:
         return None
     awy = parts[10].upper()
     if not fix_a or not fix_b or not awy:
         return None
-    return {
-        "a": fix_a, "b": fix_b,
-        "dir": dirn, "base": base, "top": top, "awy": awy,
-    }
+    return {"a": fix_a, "b": fix_b, "dir": dirn, "base": base, "top": top, "awy": awy}
 
 def load_xplane_awy(text: str) -> int:
-    """Заполняет AWY_GRAPH."""
     global AWY_EDGE_COUNT
     n = 0
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
-        if line.startswith("1100 ") or line.startswith("Copyright") or line.startswith("Metadata"):
-            continue
-        if line.startswith("#"):
+        if line.startswith(("1100 ", "Copyright", "Metadata", "#")):
             continue
         rec = parse_awy_line(line)
         if not rec:
             continue
         a, b = rec["a"], rec["b"]
-        awy, dirn, base, top = rec["awy"], rec["dir"], rec["base"], rec["top"]
-
-        # direction: 1 = a->b, 2 = b->a, 3 = оба
+        awy, dirn = rec["awy"], rec["dir"]
+        base, top = rec["base"], rec["top"]
         if dirn in (1, 3):
-            AWY_GRAPH.setdefault(a, []).append({
-                "to": b, "awy": awy, "dir": dirn, "base": base, "top": top
-            })
+            AWY_GRAPH.setdefault(a, []).append(
+                {"to": b, "awy": awy, "dir": dirn, "base": base, "top": top})
             AWY_EDGE_COUNT += 1
         if dirn in (2, 3):
-            AWY_GRAPH.setdefault(b, []).append({
-                "to": a, "awy": awy, "dir": dirn, "base": base, "top": top
-            })
+            AWY_GRAPH.setdefault(b, []).append(
+                {"to": a, "awy": awy, "dir": dirn, "base": base, "top": top})
             AWY_EDGE_COUNT += 1
         n += 1
     return n
 
-def parse_nav_line(line: str) -> Optional[Tuple[str, float, float, str]]:
-    """
-    earth_nav.txt: строка вида
-      2  50.0 N  30.0 E  113.10  VOR  IDENT  NAME ...
-    Точнее: [code, lat, latH, lon, lonH, freq, type, ident, name...]
-    """
+def parse_nav_line(line: str):
     parts = line.split()
     if len(parts) < 8:
         return None
@@ -415,15 +371,12 @@ def parse_nav_line(line: str) -> Optional[Tuple[str, float, float, str]]:
     return (ident, lat, lon, kind)
 
 def load_xplane_nav(text: str) -> int:
-    """Добавляет navaids из earth_nav в FIX_COORDS (если ещё нет) и в FIX_INDEX."""
     n = 0
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
-        if line.startswith("1100 ") or line.startswith("Copyright") or line.startswith("Metadata"):
-            continue
-        if line.startswith("#") or line.startswith("I"):
+        if line.startswith(("1100 ", "Copyright", "Metadata", "#", "I")):
             continue
         res = parse_nav_line(line)
         if not res:
@@ -435,7 +388,7 @@ def load_xplane_nav(text: str) -> int:
         n += 1
     return n
 
-def try_download(urls: List[str]) -> Optional[str]:
+def try_download(urls):
     for u in urls:
         txt = http_get_text(u, timeout=180)
         if txt and len(txt) > 1000:
@@ -444,17 +397,14 @@ def try_download(urls: List[str]) -> Optional[str]:
     return None
 
 def load_xplane_all():
-    """Главная функция загрузки X-Plane navdata с кешем."""
     global XPLANE_LOADED
     t0 = time.time()
 
-    # 1) кеш
     if is_cache_fresh(AIRWAYS_CACHE):
         try:
             with open(AIRWAYS_CACHE, "r", encoding="utf-8") as f:
                 cache = json.load(f)
-            FIX_COORDS.clear()
-            AWY_GRAPH.clear()
+            FIX_COORDS.clear(); AWY_GRAPH.clear()
             for k, v in cache.get("fixes", {}).items():
                 FIX_COORDS[k] = (v[0], v[1])
             for k, v in cache.get("awys", {}).items():
@@ -466,7 +416,6 @@ def load_xplane_all():
         except Exception as e:
             log(f"xplane cache read fail: {e}")
 
-    # 2) скачиваем
     log("downloading earth_fix / earth_awy / earth_nav ...")
     txt_fix = try_download(NAVDATA_FILES["fix"])
     txt_awy = try_download(NAVDATA_FILES["awy"])
@@ -489,7 +438,6 @@ def load_xplane_all():
     XPLANE_LOADED = True
     LOAD_STATE["xplane"] = True
 
-    # 3) кеш на диск
     try:
         cache = {
             "fixes": {k: [v[0], v[1]] for k, v in FIX_COORDS.items()},
@@ -509,28 +457,21 @@ def load_xplane_all():
 # A* ПО AIRWAY-ГРАФУ
 # =====================================================================
 
-def build_awy_neighbors(ident: str) -> List[Tuple[str, float, str, int, int]]:
-    """
-    Возвращает список (neighbor_ident, dist_nm, awy_name, base, top) для ident.
-    Отбрасывает рёбра, для которых нет координат.
-    """
+def build_awy_neighbors(ident):
     out = []
     here = FIX_COORDS.get(ident)
     if not here:
         return out
     lat1, lon1 = here
     for e in AWY_GRAPH.get(ident, []):
-        to = e["to"]
-        there = FIX_COORDS.get(to)
+        there = FIX_COORDS.get(e["to"])
         if not there:
             continue
-        lat2, lon2 = there
-        d = haversine_nm(lat1, lon1, lat2, lon2)
-        out.append((to, d, e["awy"], e["base"], e["top"]))
+        d = haversine_nm(lat1, lon1, there[0], there[1])
+        out.append((e["to"], d, e["awy"], e["base"], e["top"]))
     return out
 
-def find_nearest_fixes(lat: float, lon: float, limit: int = 8, max_nm: float = 80.0) -> List[Tuple[str, float]]:
-    """Возвращает до `limit` ближайших fix'ов в радиусе max_nm."""
+def find_nearest_fixes(lat, lon, limit=8, max_nm=80.0):
     out = []
     for ident, (flat, flon) in FIX_COORDS.items():
         d = haversine_nm(lat, lon, flat, flon)
@@ -539,44 +480,30 @@ def find_nearest_fixes(lat: float, lon: float, limit: int = 8, max_nm: float = 8
     out.sort(key=lambda x: x[1])
     return out[:limit]
 
-def astar_airways(start_lat, start_lon, end_lat, end_lon) -> Optional[List[Dict[str, Any]]]:
-    """
-    A* по airway-графу. Возвращает список waypoints (список dict с ident/lat/lon/awy)
-    или None, если не удалось.
-    """
+def astar_airways(start_lat, start_lon, end_lat, end_lon):
     if not AWY_GRAPH or not FIX_COORDS:
         return None
-
     t0 = time.time()
-
-    # ближайшие fix'ы к start и к end
-    s_fixes = find_nearest_fixes(start_lat, start_lon, limit=10, max_nm=120.0)
-    e_fixes = find_nearest_fixes(end_lat, end_lon, limit=10, max_nm=120.0)
+    s_fixes = find_nearest_fixes(start_lat, start_lon, 10, 120.0)
+    e_fixes = find_nearest_fixes(end_lat, end_lon, 10, 120.0)
     if not s_fixes or not e_fixes:
         log("astar_airways: no nearby fixes")
         return None
-
     e_set = {ident: d for ident, d in e_fixes}
 
-    def h(ident: str) -> float:
+    def h(ident):
         lat, lon = FIX_COORDS[ident]
         return haversine_nm(lat, lon, end_lat, end_lon)
 
-    # priority queue: (f, g, ident, prev_ident, awy_name)
     openq = []
     for ident, d_start in s_fixes:
-        g = d_start
-        heapq.heappush(openq, (g + h(ident), g, ident, None, None))
-
-    came_from: Dict[str, Tuple[Optional[str], Optional[str]]] = {}  # ident -> (prev, awy)
-    g_score: Dict[str, float] = {}
-    for ident, d_start in s_fixes:
-        g_score[ident] = d_start
-
+        heapq.heappush(openq, (d_start + h(ident), d_start, ident, None, None))
+    came_from = {}
+    g_score = {ident: d for ident, d in s_fixes}
     visited = set()
     found = None
     expansions = 0
-    MAX_EXPANSIONS = 200000
+    MAX_EXP = 200000
 
     while openq:
         f, g, cur, prev, awy = heapq.heappop(openq)
@@ -585,15 +512,12 @@ def astar_airways(start_lat, start_lon, end_lat, end_lon) -> Optional[List[Dict[
         visited.add(cur)
         came_from[cur] = (prev, awy)
         expansions += 1
-        if expansions > MAX_EXPANSIONS:
-            log("astar_airways: MAX_EXPANSIONS reached")
+        if expansions > MAX_EXP:
+            log("astar_airways: MAX_EXPANSIONS")
             break
-
         if cur in e_set:
-            # дошли до одного из fix'ов возле end
             found = cur
             break
-
         for to, d, awy_name, base, top in build_awy_neighbors(cur):
             if to in visited:
                 continue
@@ -606,7 +530,6 @@ def astar_airways(start_lat, start_lon, end_lat, end_lon) -> Optional[List[Dict[
         log(f"astar_airways: no path, expansions={expansions}")
         return None
 
-    # reconstruct
     path = []
     cur = found
     while cur is not None:
@@ -615,57 +538,38 @@ def astar_airways(start_lat, start_lon, end_lat, end_lon) -> Optional[List[Dict[
         cur = prev
     path.reverse()
 
-    # превращаем в waypoints с координатами
     wps = []
     for p in path:
-        ident = p["ident"]
-        lat, lon = FIX_COORDS[ident]
-        wps.append({
-            "ident": ident,
-            "lat": lat, "lon": lon,
-            "awy": p.get("awy"),
-        })
+        lat, lon = FIX_COORDS[p["ident"]]
+        wps.append({"ident": p["ident"], "lat": lat, "lon": lon, "awy": p.get("awy")})
 
-    log(f"astar_airways: OK, {len(wps)} wps, {expansions} expansions, {time.time()-t0:.2f}s")
+    log(f"astar_airways: OK {len(wps)} wps, {expansions} exp, {time.time()-t0:.2f}s")
     return wps
 
 # =====================================================================
-# A* ПО NAVAIDS (старый fallback) — упрощённый, как было
+# A* ПО NAVAIDS (fallback)
 # =====================================================================
 
 def build_navaid_graph():
-    """Строит граф из NAVAIDS: каждый с 30 ближайшими в радиусе 200 NM."""
     global NAVAID_GRAPH
-    if NAVAID_GRAPH:
-        return
-    if not NAVAIDS:
+    if NAVAID_GRAPH or not NAVAIDS:
         return
     log("building navaid graph...")
     t0 = time.time()
-    n = len(NAVAIDS)
-    # простая сетка по широте/долготе для ускорения
-    for i in range(n):
-        a = NAVAIDS[i]
-        # ищем ближайших линейно — медленно, но один раз
-        pass
-    # Для экономии времени: строим рёбра по сетке 2°×2°
     BUCKET = 2.0
-    grid: Dict[Tuple[int, int], List[int]] = {}
+    grid = {}
     for i, nav in enumerate(NAVAIDS):
-        gx = int(nav["lon"] // BUCKET)
-        gy = int(nav["lat"] // BUCKET)
+        gx = int(nav["lon"] // BUCKET); gy = int(nav["lat"] // BUCKET)
         grid.setdefault((gx, gy), []).append(i)
     for i, nav in enumerate(NAVAIDS):
-        gx = int(nav["lon"] // BUCKET)
-        gy = int(nav["lat"] // BUCKET)
+        gx = int(nav["lon"] // BUCKET); gy = int(nav["lat"] // BUCKET)
         cand = []
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 cand.extend(grid.get((gx+dx, gy+dy), []))
         edges = []
         for j in cand:
-            if i == j:
-                continue
+            if i == j: continue
             b = NAVAIDS[j]
             d = haversine_nm(nav["lat"], nav["lon"], b["lat"], b["lon"])
             if d <= 250:
@@ -674,7 +578,7 @@ def build_navaid_graph():
         NAVAID_GRAPH[i] = edges[:20]
     log(f"navaid graph built: {len(NAVAID_GRAPH)} nodes, {time.time()-t0:.1f}s")
 
-def astar_navaids(start_lat, start_lon, end_lat, end_lon) -> Optional[List[Dict[str, Any]]]:
+def astar_navaids(start_lat, start_lon, end_lat, end_lon):
     if not NAVAIDS:
         return None
     build_navaid_graph()
@@ -710,25 +614,19 @@ def astar_navaids(start_lat, start_lon, end_lat, end_lon) -> Optional[List[Dict[
     MAXE = 100000
     while openq:
         f, g, cur, prev = heapq.heappop(openq)
-        if cur in visited:
-            continue
-        visited.add(cur)
-        came[cur] = prev
+        if cur in visited: continue
+        visited.add(cur); came[cur] = prev
         expansions += 1
-        if expansions > MAXE:
-            break
+        if expansions > MAXE: break
         if cur in e_idx:
-            found = cur
-            break
+            found = cur; break
         for nxt, d in NAVAID_GRAPH.get(cur, []):
-            if nxt in visited:
-                continue
+            if nxt in visited: continue
             t = g + d
             if t < gsc.get(nxt, float("inf")):
                 gsc[nxt] = t
                 heapq.heappush(openq, (t + h(nxt), t, nxt, cur))
-    if not found:
-        return None
+    if not found: return None
     path = []
     cur = found
     while cur is not None:
@@ -742,7 +640,7 @@ def astar_navaids(start_lat, start_lon, end_lat, end_lon) -> Optional[List[Dict[
 # MANUAL ROUTES
 # =====================================================================
 
-MANUAL_ROUTES: Dict[Tuple[str, str], List[Dict[str, Any]]] = {
+MANUAL_ROUTES = {
     ("ULLI", "UUWW"): [
         {"ident": "ULLI", "lat": 59.8003, "lon": 30.2625, "awy": None},
         {"ident": "DEDUM", "lat": 59.8333, "lon": 30.5000, "awy": "W1"},
@@ -787,10 +685,10 @@ MANUAL_ROUTES: Dict[Tuple[str, str], List[Dict[str, Any]]] = {
 }
 
 # =====================================================================
-# SID / STAR (как было — оставляем словарь, логика ниже)
+# SID / STAR
 # =====================================================================
 
-SID_STAR: Dict[str, Dict[str, str]] = {
+SID_STAR = {
     "UUEE": {"sid": "SID via LIDMO", "star": "STAR via GILUK"},
     "ULLI": {"sid": "SID via DEDUM", "star": "STAR via LATLA"},
     "UUWW": {"sid": "SID via BUTER", "star": "STAR via LUKAL"},
@@ -828,7 +726,7 @@ SID_STAR: Dict[str, Dict[str, str]] = {
     "CYYZ": {"sid": "SID via YYZ", "star": "STAR via YYZ"},
 }
 
-def get_sid_star(icao: str) -> Dict[str, str]:
+def get_sid_star(icao):
     icao = icao.upper()
     if icao in SID_STAR:
         return SID_STAR[icao]
@@ -838,11 +736,9 @@ def get_sid_star(icao: str) -> Dict[str, str]:
 # METAR
 # =====================================================================
 
-METAR_URL = "https://aviationweather.gov/api/data/metar?ids={icao}&format=raw&taf=false"
-
-def fetch_metar(icao: str) -> Optional[str]:
+def fetch_metar(icao):
     try:
-        url = METAR_URL.format(icao=icao.upper())
+        url = f"https://aviationweather.gov/api/data/metar?ids={icao.upper()}&format=raw&taf=false"
         req = urllib.request.Request(url, headers={"User-Agent": "FlyBrief/0.7"})
         with urllib.request.urlopen(req, timeout=20) as r:
             txt = r.read().decode("utf-8", errors="replace").strip()
@@ -852,18 +748,14 @@ def fetch_metar(icao: str) -> Optional[str]:
         return None
 
 # =====================================================================
-# РАСЧЁТ МАРШРУТА — ядро
+# РАСЧЁТ МАРШРУТА
 # =====================================================================
 
-def airport_coord(icao: str) -> Optional[Tuple[float, float]]:
-    icao = icao.upper()
-    a = AIRPORTS.get(icao)
-    if a:
-        return (a["lat"], a["lon"])
-    return None
+def airport_coord(icao):
+    a = AIRPORTS.get(icao.upper())
+    return (a["lat"], a["lon"]) if a else None
 
-def gc_route(dep_lat, dep_lon, arr_lat, arr_lon) -> List[Dict[str, Any]]:
-    """Простая Great Circle: dep → (промежуточные точки) → arr."""
+def gc_route(dep_lat, dep_lon, arr_lat, arr_lon):
     d = haversine_nm(dep_lat, dep_lon, arr_lat, arr_lon)
     n = max(2, int(d // 300) + 2)
     pts = []
@@ -874,83 +766,145 @@ def gc_route(dep_lat, dep_lon, arr_lat, arr_lon) -> List[Dict[str, Any]]:
         pts.append({"ident": f"GC{i:02d}", "lat": lat, "lon": lon, "awy": None})
     return pts
 
-def calc_route(dep: str, arr: str) -> Dict[str, Any]:
-    dep = dep.upper(); arr = arr.upper()
+def fmt_hhmm(distance_nm, gs_kts):
+    if gs_kts <= 0:
+        return "--:--"
+    hours = distance_nm / gs_kts
+    h = int(hours); m = int(round((hours - h) * 60))
+    if m == 60: h += 1; m = 0
+    return f"{h:02d}:{m:02d}"
 
-    dep_c = airport_coord(dep)
-    arr_c = airport_coord(arr)
+def build_ofp(dep, arr, route, ac="A320", pax=150, cargo=0.0):
+    pts = route["points"]; dist = route["distance_nm"]; src = route["source"]
+    gs_map = {
+        "A320": 450, "A321": 450, "A319": 450, "A330": 480, "A350": 490,
+        "B737": 450, "B738": 450, "B739": 450, "B747": 490, "B777": 490,
+        "B787": 490, "E190": 430, "CRJ9": 430, "AT72": 270,
+    }
+    gs = gs_map.get(ac.upper(), 450)
+    trip_fuel = dist * 12.0
+    taxi_fuel = 200.0
+    contingency = trip_fuel * 0.05
+    alternate_fuel = 800.0
+    final_reserve = 1200.0
+    block_fuel = trip_fuel + taxi_fuel + contingency + alternate_fuel + final_reserve
+    oew = 42000.0
+    payload = pax * 84.0 + cargo
+    zfw = oew + payload
+    tow = zfw + block_fuel
+    lw = tow - trip_fuel * 0.9
+    etd = datetime.now(timezone.utc)
+    ete_str = fmt_hhmm(dist, gs)
+    hh, mm = map(int, ete_str.split(":"))
+    eta = etd.timestamp() + hh*3600 + mm*60
+    eta_dt = datetime.fromtimestamp(eta, tz=timezone.utc)
+    sid_star = route.get("sid_star", {})
+    dep_sid = sid_star.get("dep", {}).get("sid", "")
+    arr_star = sid_star.get("arr", {}).get("star", "")
+
+    L = []
+    L.append("=" * 78)
+    L.append(f"  FLYBRIEF OFP — {dep} → {arr}")
+    L.append("=" * 78)
+    L.append(f"  Aircraft : {ac}")
+    L.append(f"  Pax      : {pax}   Cargo: {cargo:.0f} kg")
+    L.append(f"  Route src: {src.upper()}")
+    L.append(f"  Distance : {dist:.0f} NM")
+    L.append(f"  Cruise GS: {gs} kts")
+    L.append(f"  ETD (UTC): {etd.strftime('%Y-%m-%d %H:%M')}")
+    L.append(f"  ETE      : {ete_str}")
+    L.append(f"  ETA (UTC): {eta_dt.strftime('%Y-%m-%d %H:%M')}")
+    L.append("")
+    L.append("-" * 78)
+    L.append("  ROUTE")
+    L.append("-" * 78)
+    if dep_sid:
+        L.append(f"  {dep}  {dep_sid}")
+    for p in pts:
+        awy = p.get("awy")
+        tag = f" [{awy}]" if awy else ""
+        L.append(f"  {p['ident']:<8}{tag:<12}  {p['lat']:>9.4f}  {p['lon']:>10.4f}")
+    if arr_star:
+        L.append(f"  {arr}  {arr_star}")
+    L.append("")
+    L.append("-" * 78)
+    L.append("  FUEL BREAKDOWN")
+    L.append("-" * 78)
+    L.append(f"  Taxi         : {taxi_fuel:>8.0f} kg")
+    L.append(f"  Trip         : {trip_fuel:>8.0f} kg")
+    L.append(f"  Contingency  : {contingency:>8.0f} kg")
+    L.append(f"  Alternate    : {alternate_fuel:>8.0f} kg")
+    L.append(f"  Final reserve: {final_reserve:>8.0f} kg")
+    L.append(f"  BLOCK FUEL   : {block_fuel:>8.0f} kg")
+    L.append("")
+    L.append("-" * 78)
+    L.append("  WEIGHTS")
+    L.append("-" * 78)
+    L.append(f"  OEW          : {oew:>8.0f} kg")
+    L.append(f"  Payload      : {payload:>8.0f} kg")
+    L.append(f"  ZFW          : {zfw:>8.0f} kg")
+    L.append(f"  TOW          : {tow:>8.0f} kg")
+    L.append(f"  LW           : {lw:>8.0f} kg")
+    L.append("=" * 78)
+    L.append(f"  Generated by FlyBrief v{APP_VERSION}")
+    L.append("=" * 78)
+    return "\n".join(L)
+
+def calc_route(dep, arr, ac="A320", pax=150, cargo=0.0,
+               dep_rwy=None, arr_rwy=None):
+    dep = dep.upper(); arr = arr.upper()
+    dep_c = airport_coord(dep); arr_c = airport_coord(arr)
     if not dep_c or not arr_c:
         raise HTTPException(400, f"unknown airport: {dep if not dep_c else arr}")
-
     dep_lat, dep_lon = dep_c
     arr_lat, arr_lon = arr_c
+    result = None
 
-    # 1) MANUAL
     manual = MANUAL_ROUTES.get((dep, arr)) or MANUAL_ROUTES.get((arr, dep))
     if manual:
         route = list(manual) if (dep, arr) in MANUAL_ROUTES else list(reversed(manual))
-        return {
-            "source": "manual",
-            "dep": dep, "arr": arr,
-            "points": route,
-            "distance_nm": sum(
-                haversine_nm(route[i]["lat"], route[i]["lon"], route[i+1]["lat"], route[i+1]["lon"])
-                for i in range(len(route)-1)
-            ),
-            "sid_star": {"dep": get_sid_star(dep), "arr": get_sid_star(arr)},
-        }
+        result = {"source": "manual", "dep": dep, "arr": arr, "points": route,
+                  "distance_nm": sum(haversine_nm(route[i]["lat"], route[i]["lon"],
+                                                  route[i+1]["lat"], route[i+1]["lon"])
+                                     for i in range(len(route)-1))}
 
-    # 2) AIRWAYS-A*
-    if XPLANE_LOADED and AWY_GRAPH:
+    if result is None and XPLANE_LOADED and AWY_GRAPH:
         wps = astar_airways(dep_lat, dep_lon, arr_lat, arr_lon)
         if wps and len(wps) >= 2:
-            # вставляем dep/arr по краям
             points = [{"ident": dep, "lat": dep_lat, "lon": dep_lon, "awy": None}]
             points.extend(wps)
             points.append({"ident": arr, "lat": arr_lat, "lon": arr_lon, "awy": None})
-            return {
-                "source": "airways",
-                "dep": dep, "arr": arr,
-                "points": points,
-                "distance_nm": sum(
-                    haversine_nm(points[i]["lat"], points[i]["lon"], points[i+1]["lat"], points[i+1]["lon"])
-                    for i in range(len(points)-1)
-                ),
-                "sid_star": {"dep": get_sid_star(dep), "arr": get_sid_star(arr)},
-            }
+            result = {"source": "airways", "dep": dep, "arr": arr, "points": points,
+                      "distance_nm": sum(haversine_nm(points[i]["lat"], points[i]["lon"],
+                                                      points[i+1]["lat"], points[i+1]["lon"])
+                                         for i in range(len(points)-1))}
 
-    # 3) NAVAIDS-A*
-    if NAVAIDS:
+    if result is None and NAVAIDS:
         wps = astar_navaids(dep_lat, dep_lon, arr_lat, arr_lon)
         if wps and len(wps) >= 2:
             points = [{"ident": dep, "lat": dep_lat, "lon": dep_lon, "awy": None}]
             points.extend(wps)
             points.append({"ident": arr, "lat": arr_lat, "lon": arr_lon, "awy": None})
-            return {
-                "source": "navaids",
-                "dep": dep, "arr": arr,
-                "points": points,
-                "distance_nm": sum(
-                    haversine_nm(points[i]["lat"], points[i]["lon"], points[i+1]["lat"], points[i+1]["lon"])
-                    for i in range(len(points)-1)
-                ),
-                "sid_star": {"dep": get_sid_star(dep), "arr": get_sid_star(arr)},
-            }
+            result = {"source": "navaids", "dep": dep, "arr": arr, "points": points,
+                      "distance_nm": sum(haversine_nm(points[i]["lat"], points[i]["lon"],
+                                                      points[i+1]["lat"], points[i+1]["lon"])
+                                         for i in range(len(points)-1))}
 
-    # 4) GC fallback
-    points = gc_route(dep_lat, dep_lon, arr_lat, arr_lon)
-    points[0]["ident"] = dep
-    points[-1]["ident"] = arr
-    return {
-        "source": "gc",
-        "dep": dep, "arr": arr,
-        "points": points,
-        "distance_nm": haversine_nm(dep_lat, dep_lon, arr_lat, arr_lon),
-        "sid_star": {"dep": get_sid_star(dep), "arr": get_sid_star(arr)},
-    }
+    if result is None:
+        points = gc_route(dep_lat, dep_lon, arr_lat, arr_lon)
+        points[0]["ident"] = dep
+        points[-1]["ident"] = arr
+        result = {"source": "gc", "dep": dep, "arr": arr, "points": points,
+                  "distance_nm": haversine_nm(dep_lat, dep_lon, arr_lat, arr_lon)}
+
+    result["sid_star"] = {"dep": get_sid_star(dep), "arr": get_sid_star(arr)}
+    result["dep_rwy"] = dep_rwy
+    result["arr_rwy"] = arr_rwy
+    result["ofp_text"] = build_ofp(dep, arr, result, ac=ac, pax=pax, cargo=cargo)
+    return result
 
 # =====================================================================
-# МОДЕЛИ ЗАПРОСОВ
+# МОДЕЛИ
 # =====================================================================
 
 class CalcReq(BaseModel):
@@ -959,6 +913,8 @@ class CalcReq(BaseModel):
     ac: Optional[str] = "A320"
     pax: Optional[int] = 150
     cargo: Optional[float] = 0
+    dep_rwy: Optional[str] = None
+    arr_rwy: Optional[str] = None
 
 # =====================================================================
 # ЭНДПОИНТЫ
@@ -968,22 +924,13 @@ class CalcReq(BaseModel):
 async def _startup():
     LOAD_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
     log(f"FlyBrief v{APP_VERSION} starting...")
-    try:
-        load_airports()
-    except Exception as e:
-        LOAD_STATE["error"] = f"airports: {e}"; log(LOAD_STATE["error"])
-    try:
-        load_runways()
-    except Exception as e:
-        LOAD_STATE["error"] = f"runways: {e}"; log(LOAD_STATE["error"])
-    try:
-        load_navaids()
-    except Exception as e:
-        LOAD_STATE["error"] = f"navaids: {e}"; log(LOAD_STATE["error"])
-    try:
-        load_xplane_all()
-    except Exception as e:
-        LOAD_STATE["error"] = f"xplane: {e}"; log(LOAD_STATE["error"])
+    for fn, name in ((load_airports, "airports"), (load_runways, "runways"),
+                     (load_navaids, "navaids"), (load_xplane_all, "xplane")):
+        try:
+            fn()
+        except Exception as e:
+            LOAD_STATE["error"] = f"{name}: {e}"
+            log(LOAD_STATE["error"])
     LOAD_STATE["finished_at"] = datetime.now(timezone.utc).isoformat()
     log("startup done")
 
@@ -993,7 +940,7 @@ async def index():
     if os.path.exists(html_path):
         with open(html_path, "r", encoding="utf-8") as f:
             return HTMLResponse(f.read())
-    return HTMLResponse("<h1>FlyBrief v0.7.0</h1><p>indexfly.html not found</p>")
+    return HTMLResponse("<h1>FlyBrief v0.7.1</h1><p>indexfly.html not found</p>")
 
 @app.get("/airports/stats")
 async def stats():
@@ -1026,65 +973,70 @@ async def search(q: str = Query(..., min_length=1)):
 
 @app.get("/runways")
 async def runways(icao: str):
+    """
+    Возвращает список полос с идентификаторами.
+    Формат: { "icao": "UUEE", "runways": [
+        {"ident":"06L","hdg":62,"length_ft":12000,"lat":...,"lon":...,"pair":"24R"}, ...]}
+    """
     icao = icao.upper()
     if icao not in RUNWAYS:
         return {"icao": icao, "runways": []}
-    return {"icao": icao, "runways": RUNWAYS[icao]}
+    # уже отсортировано по длине и идентификатору
+    rws = sorted(RUNWAYS[icao], key=lambda r: (-r.get("len_ft", 0), r["ident"]))
+    return {"icao": icao, "runways": rws}
 
 @app.get("/charts")
 async def charts(icao: str):
     icao = icao.upper()
-    # у нас нет реальных чартов, отдаём заглушку с ссылкой на SkyVector
     return {
         "icao": icao,
         "charts": [
             {"name": f"{icao} — SkyVector", "url": f"https://skyvector.com/airport/{icao}"},
-            {"name": f"{icao} — AirNav", "url": f"https://www.airnav.com/airport/{icao}"},
+            {"name": f"{icao} — AirNav",   "url": f"https://www.airnav.com/airport/{icao}"},
         ],
     }
 
 @app.get("/weather")
 async def weather(icao: str):
     m = fetch_metar(icao)
-    if not m:
-        return {"icao": icao.upper(), "metar": None, "error": "no data"}
     return {"icao": icao.upper(), "metar": m}
 
 @app.post("/calculate")
 async def calculate(req: CalcReq):
-    r = calc_route(req.dep, req.arr)
-    return r
+    return calc_route(req.dep, req.arr,
+                      ac=req.ac or "A320",
+                      pax=req.pax or 150,
+                      cargo=req.cargo or 0.0,
+                      dep_rwy=req.dep_rwy,
+                      arr_rwy=req.arr_rwy)
 
 @app.get("/calculate")
-async def calculate_get(dep: str, arr: str, ac: str = "A320", pax: int = 150, cargo: float = 0):
-    r = calc_route(dep, arr)
-    return r
+async def calculate_get(dep: str, arr: str, ac: str = "A320",
+                        pax: int = 150, cargo: float = 0,
+                        dep_rwy: Optional[str] = None,
+                        arr_rwy: Optional[str] = None):
+    return calc_route(dep, arr, ac=ac, pax=pax, cargo=cargo,
+                      dep_rwy=dep_rwy, arr_rwy=arr_rwy)
 
 @app.get("/download_pln")
 async def download_pln(dep: str, arr: str):
     r = calc_route(dep, arr)
-    pts = r["points"]
-    lines = []
-    lines.append(f"; FlyBrief PLN export")
-    lines.append(f"; {dep} -> {arr}")
-    lines.append(f"; source: {r['source']}")
-    lines.append("")
-    lines.append("[FlightPlan]")
-    lines.append(f"title={dep} to {arr}")
-    lines.append("type=IFR")
-    lines.append(f"departure_id={dep}")
-    lines.append(f"destination_id={arr}")
-    lines.append("")
-    lines.append("[Waypoints]")
-    for p in pts:
+    lines = ["; FlyBrief PLN export",
+             f"; {dep} -> {arr}",
+             f"; source: {r['source']}",
+             "",
+             "[FlightPlan]",
+             f"title={dep} to {arr}",
+             "type=IFR",
+             f"departure_id={dep}",
+             f"destination_id={arr}",
+             "",
+             "[Waypoints]"]
+    for p in r["points"]:
         lines.append(f"{p['ident']} {p['lat']:.5f} {p['lon']:.5f}")
     return PlainTextResponse("\n".join(lines), headers={
         "Content-Disposition": f"attachment; filename={dep}-{arr}.pln"
     })
-
-# =====================================================================
-# ЗАПУСК (для локального теста; на Render запускается через uvicorn)
-# =====================================================================
 
 if __name__ == "__main__":
     import uvicorn
