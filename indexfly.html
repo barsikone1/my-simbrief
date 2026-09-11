@@ -6,8 +6,8 @@
     <style>
         body { font-family: 'Courier New', monospace; margin: 0; padding: 20px; display: flex; gap: 20px; background: #121212; color: #e0e0e0; height: 95vh; box-sizing: border-box; }
         .panel { width: 420px; min-width: 420px; padding: 25px; background: #1a1a1a; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.6); border: 1px solid #2d2d2d; overflow-y: auto; height: 100%; box-sizing: border-box; }
-        .map-container { flex-grow: 1; height: 100%; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; background: #0a0a0c; display: flex; flex-direction: column; padding: 15px; box-sizing: border-box; position: relative; }
-        #radar-canvas { width: 100%; flex-grow: 1; background: #070709; border: 1px solid #222; border-radius: 4px; }
+        .map-container { flex-grow: 1; height: 100%; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; background: #070709; display: flex; display: flex; flex-direction: column; padding: 15px; box-sizing: border-box; }
+        #radar-canvas { width: 100%; flex-grow: 1; background: #040406; border: 1px solid #222; border-radius: 4px; }
         .map-title { color: #ff9800; font-size: 14px; font-weight: bold; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }
         h2 { color: #ff9800; border-bottom: 2px solid #ff9800; padding-bottom: 10px; margin-top: 0; font-size: 22px; }
         label { display: block; margin: 10px 0 5px; font-weight: bold; color: #b0b0b0; }
@@ -23,18 +23,16 @@
 </head>
 <body>
     <div class="panel">
-        <h2>FlyBrief Pro v3.0</h2>
+        <h2>FlyBrief Pro v3.5</h2>
         <label>Вылет (ICAO):</label>
-        <input id="dep" value="ULLI">
+        <input id="dep" value="KJFK">
         <label>Прилет (ICAO):</label>
-        <input id="arr" value="UUWW">
-        <label>Запасной (ICAO):</label>
-        <input id="alt" value="UUEE">
+        <input id="arr" value="OMDB">
         <label>Тип ВС (Самолет):</label>
         <select id="ac">
+            <option value="B77W">Boeing 777-300ER</option>
             <option value="B738">Boeing 737-800</option>
             <option value="A20N">Airbus A320neo</option>
-            <option value="B77W">Boeing 777-300ER</option>
             <option value="C172">Cessna 172 Skyhawk</option>
         </select>
         <button onclick="calc()">СГЕНЕРИРОВАТЬ OFP</button>
@@ -54,7 +52,6 @@
         const canvas = document.getElementById("radar-canvas");
         const ctx = canvas.getContext("2d");
 
-        // Подстраиваем внутреннее разрешение холста под экран
         function resizeCanvas() {
             canvas.width = canvas.clientWidth;
             canvas.height = canvas.clientHeight;
@@ -65,113 +62,67 @@
 
         function drawGrid() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.strokeStyle = "#16161a";
-            ctx.lineWidth = 1;
-            // Рисуем сетку радара
-            for(let x = 0; x < canvas.width; x += 40) {
-                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-            }
-            for(let y = 0; y < canvas.height; y += 40) {
-                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-            }
+            ctx.strokeStyle = "#131316"; ctx.lineWidth = 1;
+            for(let x = 0; x < canvas.width; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
+            for(let y = 0; y < canvas.height; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
         }
 
         async function calc() {
             const d = document.getElementById("dep").value.toUpperCase().trim();
             const a = document.getElementById("arr").value.toUpperCase().trim();
-            const alt = document.getElementById("alt").value.toUpperCase().trim();
             const c = document.getElementById("ac").value;
             try {
-                const res = await fetch(`/calculate?dep=${d}&arr=${a}&alt=${alt}&ac=${c}`);
+                const res = await fetch(`/calculate?dep=${d}&arr=${a}&ac=${c}`);
                 if (!res.ok) return;
                 const data = await res.json();
                 
-                // Навигационный расчет эшелона
-                let crz_alt = "FL360 (EVEN)";
-                if (c === "C172") crz_alt = "5000 FT";
-                else if (data.path && data.path.length > 0) {
-                    const isEast = data.path[data.path.length-1].lon > data.path[0].lon;
-                    crz_alt = isEast ? "FL350 (ODD)" : "FL360 (EVEN)";
-                }
-                
-                let updated_text = data.ofp_text;
-                if (!updated_text.includes("CRUISE ALTITUDE")) {
-                    updated_text = updated_text.replace("ROUTE LOG:", `CRUISE ALTITUDE: ${crz_alt}\n  ROUTE LOG:`);
-                }
-                
-                document.getElementById("ofp_block").innerText = updated_text;
+                document.getElementById("ofp_block").innerText = data.ofp_text;
                 document.getElementById("res").style.display = "block";
                 document.getElementById("dl_btn").style.display = "block";
                 
-                // РИСУЕМ ТАКТИЧЕСКИЙ МАРШРУТ (TACTICAL ND)
                 if (data.path && data.path.length > 0) {
                     drawGrid();
-                    
-                    // Находим крайние точки для масштабирования маршрута на весь экран холста
-                    const lats = data.path.map(p => p.lat);
-                    const lons = data.path.map(p => p.lon);
+                    const lats = data.path.map(p => p.lat); const lons = data.path.map(p => p.lon);
                     lats.push(data.alt_lat); lons.push(data.alt_lon);
                     
                     const minLat = Math.min(...lats), maxLat = Math.max(...lats);
                     const minLon = Math.min(...lons), maxLon = Math.max(...lons);
-                    
                     const padding = 60;
+                    
                     function scale(lat, lon) {
                         const x = padding + ((lon - minLon) / (maxLon - minLon || 1)) * (canvas.width - padding * 2);
-                        // В компьютерной графике ось Y идет сверху вниз, переворачиваем широту
                         const y = canvas.height - padding - ((lat - minLat) / (maxLat - minLat || 1)) * (canvas.height - padding * 2);
                         return {x, y};
                     }
                     
-                    // 1. Рисуем сплошной оранжевый основной маршрут по точкам
-                    ctx.strokeStyle = "#ff9800";
-                    ctx.lineWidth = 3;
-                    ctx.beginPath();
-                    
-                    data.path.forEach((pt, index) => {
+                    // Рисуем зигзагообразную авиатрассу (как в SimBrief)
+                    ctx.strokeStyle = "#ff9800"; ctx.lineWidth = 3; ctx.beginPath();
+                    data.path.forEach((pt, idx) => {
                         const pos = scale(pt.lat, pt.lon);
-                        if (index === 0) ctx.moveTo(pos.x, pos.y);
-                        else ctx.lineTo(pos.x, pos.y);
+                        if (idx === 0) ctx.moveTo(pos.x, pos.y); else ctx.lineTo(pos.x, pos.y);
                     });
                     ctx.stroke();
                     
-                    // 2. Рисуем фиолетовый пунктирный трек до запасного аэродрома
+                    // Автоматический трек запасного
                     const lastMainPos = scale(data.path[data.path.length-1].lat, data.path[data.path.length-1].lon);
                     const altPos = scale(data.alt_lat, data.alt_lon);
+                    ctx.strokeStyle = "#9c27b0"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+                    ctx.beginPath(); ctx.moveTo(lastMainPos.x, lastMainPos.y); ctx.lineTo(altPos.x, altPos.y); ctx.stroke();
+                    ctx.setLineDash([]);
                     
-                    ctx.strokeStyle = "#9c27b0";
-                    ctx.lineWidth = 2;
-                    ctx.setLineDash([6, 6]);
-                    ctx.beginPath();
-                    ctx.moveTo(lastMainPos.x, lastMainPos.y);
-                    ctx.lineTo(altPos.x, altPos.y);
-                    ctx.stroke();
-                    ctx.setLineDash([]); // сброс пунктира
-                    
-                    // 3. Отрисовываем светящиеся точки (Waypoints) и подписи к ним
-                    data.path.forEach((pt, index) => {
+                    // Отрисовка светящихся промежуточных Waypoints
+                    data.path.forEach((pt, idx) => {
                         const pos = scale(pt.lat, pt.lon);
-                        ctx.fillStyle = index === 0 || index === data.path.length-1 ? "#ff9800" : "#00e5ff";
-                        ctx.beginPath();
-                        ctx.arc(pos.x, pos.y, 5, 0, 2 * Math.PI);
-                        ctx.fill();
-                        
-                        ctx.fillStyle = "#fff";
-                        ctx.font = "bold 11px Courier New";
+                        ctx.fillStyle = idx === 0 || idx === data.path.length-1 ? "#ff9800" : "#00e5ff";
+                        ctx.beginPath(); ctx.arc(pos.x, pos.y, idx === 0 || idx === data.path.length-1 ? 6 : 4, 0, 2 * Math.PI); ctx.fill();
+                        ctx.fillStyle = "#fff"; ctx.font = "bold 11px Courier New";
                         ctx.fillText(pt.id, pos.x + 8, pos.y - 5);
                     });
                     
-                    // 4. Ставим точку запасного
-                    ctx.fillStyle = "#9c27b0";
-                    ctx.beginPath();
-                    ctx.arc(altPos.x, altPos.y, 5, 0, 2 * Math.PI);
-                    ctx.fill();
-                    ctx.fillStyle = "#fff";
-                    ctx.fillText(data.alt_id + " (ALTN)", altPos.x + 8, altPos.y - 5);
+                    ctx.fillStyle = "#9c27b0"; ctx.beginPath(); ctx.arc(altPos.x, altPos.y, 5, 0, 2 * Math.PI); ctx.fill();
+                    ctx.fillStyle = "#fff"; ctx.fillText(data.alt_id + " (AUTO ALTN)", altPos.x + 8, altPos.y - 5);
                 }
-            } catch (e) {
-                console.log(e);
-            }
+            } catch (e) { console.log(e); }
         }
 
         function downloadPlan() {
