@@ -10,23 +10,37 @@ import urllib.parse
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-app = FastAPI(title="FlyBrief Real-Route Engine", version="0.5.0")
+app = FastAPI(title="FlyBrief Real-Route Engine", version="0.6.0")
 
 # ============================================================
 # КОНФИГ
 # ============================================================
 FLIGHTPLANDB_KEY = os.environ.get("FLIGHTPLANDB_KEY", "").strip()
+NAVIGRAPH_CLIENT_ID = os.environ.get("NAVIGRAPH_CLIENT_ID", "").strip()
+NAVIGRAPH_CLIENT_SECRET = os.environ.get("NAVIGRAPH_CLIENT_SECRET", "").strip()
 
+# Кеши
 AIRPORTS_CACHE = "airports_cache.json"
 RUNWAYS_CACHE  = "runways_cache.json"
 NAVAIDS_CACHE  = "navaids_cache.json"
+AIRWAYS_CACHE  = "airways_cache.json"      # X-Plane earth_awy.dat + fixes
+CACHE_MAX_AGE_SEC = 60 * 60 * 24 * 30
 
+# OurAirports (CSV)
 AIRPORTS_CSV_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 RUNWAYS_CSV_URL  = "https://davidmegginson.github.io/ourairports-data/runways.csv"
 NAVAIDS_CSV_URL  = "https://davidmegginson.github.io/ourairports-data/navaids.csv"
 
-CACHE_MAX_AGE_SEC = 60 * 60 * 24 * 30   # 30 дней
-GRAPH_EDGE_MAX_NM = 250                 # максимальное ребро графа navaids
+# X-Plane navdata (Laminar Research) — публичные зеркала
+# Формат earth_awy.dat / earth_fix.dat / earth_nav.dat — стандартный X-Plane
+XPLANE_SOURCES = [
+    # github mirrors — они стабильнее, чем data.x-plane.com (который периодически недоступен)
+    "https://raw.githubusercontent.com/akaflieg/airsim-navdata/master/",
+    "https://raw.githubusercontent.com/navdata-xplane/navdata/master/",
+]
+XPLANE_FILES = ["earth_awy.dat", "earth_fix.dat", "earth_nav.dat"]
+
+GRAPH_EDGE_MAX_NM = 250
 
 PROFILES = {
     "B77W": {"name": "Boeing 777-300ER",   "speed": 490, "burn": 6800, "climb": 1800, "cont": 0.05, "hold": 3500},
@@ -65,12 +79,16 @@ FALLBACK_DB = {
 # ============================================================
 # ХРАНИЛИЩА
 # ============================================================
-DB = {}          # ICAO -> {name, lat, lon, country}
-RUNWAYS = {}     # ICAO -> [{id, hdg, length_ft, lat, lon}, ...]
-NAVAIDS = {}     # ident -> {name, type, lat, lon, country}
-NAVAIDS_BY_ID = {} # внутренний id -> ident (для графа)
-GRAPH = {}       # ident -> [(neighbor_ident, dist_nm), ...]
+DB = {}            # ICAO -> {name, lat, lon, country}
+RUNWAYS = {}       # ICAO -> [{id, hdg, length_ft, lat, lon}]
+NAVAIDS = {}       # ident -> {name, type, lat, lon, country, freq_khz}
+
+FIXES = {}         # X-Plane earth_fix.dat: ident -> {lat, lon}
+AIRWAYS = {}       # X-Plane earth_awy.dat: {route_name: [(fix_a, fix_b, direction, ...)]}
+AWY_GRAPH = {}     # fix_ident -> [(neighbor, dist_nm, airway_name)]
+
 DB_LOADED_AT = 0.0
+XPLANE_LOADED = False
 
 # ============================================================
 # КЕШ
@@ -83,7 +101,7 @@ def _load_json_cache(path):
             return None
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, dict) and len(data) > 100:
+        if isinstance(data, dict) and len(data) > 50:
             return data
     except Exception:
         pass
@@ -98,14 +116,14 @@ def _save_json_cache(path, data):
         pass
 
 
-def _download_csv(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "FlyBrief/0.5"})
-    with urllib.request.urlopen(req, timeout=90) as r:
+def _download(url, timeout=90):
+    req = urllib.request.Request(url, headers={"User-Agent": "FlyBrief/0.6"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", errors="ignore")
 
 
 # ============================================================
-# ПАРСИНГ CSV
+# ПАРСИНГ CSV (OurAirports)
 # ============================================================
 def _parse_airports_csv(text):
     result = {}
@@ -179,7 +197,6 @@ def _parse_runways_csv(text, apt_set):
 
 
 def _parse_navaids_csv(text):
-    """Оставляет только VOR/VOR-DME/VORTAC/TACAN/NDB/NDB-DME с координатами."""
     result = {}
     reader = csv.DictReader(io.StringIO(text))
     for row in reader:
@@ -197,13 +214,11 @@ def _parse_navaids_csv(text):
                 continue
             if not (-90 <= lat <= 90 and -180 <= lon <= 180):
                 continue
-            key = ident
-            # если дубликат — берём первый (VOR предпочтительнее NDB)
-            if key in result:
-                old_type = result[key]["type"]
+            if ident in result:
+                old_type = result[ident]["type"]
                 if "VOR" not in ntype and "VOR" in old_type:
                     continue
-            result[key] = {
+            result[ident] = {
                 "name": (row.get("name") or ident).strip(),
                 "type": ntype,
                 "lat": round(lat, 6),
@@ -217,12 +232,78 @@ def _parse_navaids_csv(text):
 
 
 # ============================================================
+# ПАРСИНГ X-PLANE navdata
+# Формат earth_fix.dat:
+#   lat lon ident  (пробелы)
+# Формат earth_awy.dat:
+#   fix_a lat_a lon_a fix_b lat_b lon_b airway_name direction base_fl top_fl
+#   direction: 1=N->S (a->b), 2=S->N, 3=both
+# ============================================================
+def _parse_earth_fix(text):
+    result = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("I") or line.startswith("A"):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            lat = float(parts[0])
+            lon = float(parts[1])
+            ident = parts[2].upper()
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            result[ident] = {"lat": round(lat, 6), "lon": round(lon, 6)}
+        except Exception:
+            continue
+    return result
+
+
+def _parse_earth_awy(text):
+    """Возвращает (airways_dict, ayw_graph_dict)."""
+    airways = {}       # name -> [ {from_fix, to_fix, direction, base_fl, top_fl}, ... ]
+    graph = {}         # fix -> [(neighbor, airway_name), ...]
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("I") or line.startswith("A"):
+            continue
+        parts = line.split()
+        if len(parts) < 10:
+            continue
+        try:
+            fix_a = parts[0].upper()
+            # parts[1], parts[2] — lat_a, lon_a (не используем, берём из FIXES)
+            fix_b = parts[3].upper()
+            # parts[4], parts[5] — lat_b, lon_b
+            awy_name = parts[6].upper()
+            direction = int(parts[7])
+            base_fl = int(parts[8])
+            top_fl = int(parts[9])
+        except Exception:
+            continue
+
+        airways.setdefault(awy_name, []).append({
+            "from": fix_a, "to": fix_b,
+            "dir": direction, "base_fl": base_fl, "top_fl": top_fl,
+        })
+
+        # direction: 1 = a->b, 2 = b->a, 3 = both
+        if direction in (1, 3):
+            graph.setdefault(fix_a, []).append((fix_b, awy_name))
+        if direction in (2, 3):
+            graph.setdefault(fix_b, []).append((fix_a, awy_name))
+
+    return airways, graph
+
+
+# ============================================================
 # ЗАГРУЗКА
 # ============================================================
-def load_all():
-    global DB, RUNWAYS, NAVAIDS, DB_LOADED_AT
+def load_ourairports():
+    global DB, RUNWAYS, NAVAIDS
 
-    # 1. AIRPORTS
     cached = _load_json_cache(AIRPORTS_CACHE)
     if cached:
         DB = cached
@@ -230,14 +311,13 @@ def load_all():
     else:
         try:
             print("[FlyBrief] downloading airports...")
-            DB = _parse_airports_csv(_download_csv(AIRPORTS_CSV_URL))
+            DB = _parse_airports_csv(_download(AIRPORTS_CSV_URL))
             _save_json_cache(AIRPORTS_CACHE, DB)
-            print(f"[FlyBrief] airports CSV: {len(DB)}")
+            print(f"[FlyBrief] airports: {len(DB)}")
         except Exception as e:
             print(f"[FlyBrief] airports fail: {e}")
             DB = dict(FALLBACK_DB)
 
-    # 2. RUNWAYS
     cached = _load_json_cache(RUNWAYS_CACHE)
     if cached:
         RUNWAYS = cached
@@ -245,13 +325,12 @@ def load_all():
     else:
         try:
             print("[FlyBrief] downloading runways...")
-            RUNWAYS = _parse_runways_csv(_download_csv(RUNWAYS_CSV_URL), set(DB.keys()))
+            RUNWAYS = _parse_runways_csv(_download(RUNWAYS_CSV_URL), set(DB.keys()))
             _save_json_cache(RUNWAYS_CACHE, RUNWAYS)
-            print(f"[FlyBrief] runways CSV: {len(RUNWAYS)}")
+            print(f"[FlyBrief] runways: {len(RUNWAYS)}")
         except Exception as e:
             print(f"[FlyBrief] runways fail: {e}")
 
-    # 3. NAVAIDS
     cached = _load_json_cache(NAVAIDS_CACHE)
     if cached:
         NAVAIDS = cached
@@ -259,16 +338,95 @@ def load_all():
     else:
         try:
             print("[FlyBrief] downloading navaids...")
-            NAVAIDS = _parse_navaids_csv(_download_csv(NAVAIDS_CSV_URL))
+            NAVAIDS = _parse_navaids_csv(_download(NAVAIDS_CSV_URL))
             _save_json_cache(NAVAIDS_CACHE, NAVAIDS)
-            print(f"[FlyBrief] navaids CSV: {len(NAVAIDS)}")
+            print(f"[FlyBrief] navaids: {len(NAVAIDS)}")
         except Exception as e:
             print(f"[FlyBrief] navaids fail: {e}")
 
-    DB_LOADED_AT = time.time()
+
+def load_xplane_navdata():
+    """Скачивает earth_awy.dat, earth_fix.dat, earth_nav.dat с GitHub-зеркал.
+    Если хоть один файл недоступен — X-Plane слой отключается, работаем на A* по navaids."""
+    global FIXES, AIRWAYS, AWY_GRAPH, XPLANE_LOADED
+
+    cached = _load_json_cache(AIRWAYS_CACHE)
+    if cached and cached.get("fixes") and cached.get("airways"):
+        FIXES = cached["fixes"]
+        AIRWAYS = cached["airways"]
+        # Перестроить граф из закешированных airways
+        AWY_GRAPH = {}
+        for awy_name, segments in AIRWAYS.items():
+            for seg in segments:
+                d = seg.get("dir", 3)
+                a, b = seg["from"], seg["to"]
+                if d in (1, 3):
+                    AWY_GRAPH.setdefault(a, []).append((b, awy_name))
+                if d in (2, 3):
+                    AWY_GRAPH.setdefault(b, []).append((a, awy_name))
+        XPLANE_LOADED = True
+        print(f"[FlyBrief] XPlane cache: {len(FIXES)} fixes, {len(AIRWAYS)} airways, "
+              f"{len(AWY_GRAPH)} nodes")
+        return
+
+    fix_text = None
+    awy_text = None
+
+    for base in XPLANE_SOURCES:
+        try:
+            print(f"[FlyBrief] trying XPlane mirror: {base}")
+            fix_text = _download(base + "earth_fix.dat", timeout=60)
+            awy_text = _download(base + "earth_awy.dat", timeout=60)
+            if fix_text and awy_text:
+                break
+        except Exception as e:
+            print(f"[FlyBrief] mirror {base} fail: {e}")
+            fix_text = None
+            awy_text = None
+
+    if not fix_text or not awy_text:
+        print("[FlyBrief] XPlane navdata unavailable — fallback to navaids A*")
+        XPLANE_LOADED = False
+        return
+
+    try:
+        FIXES = _parse_earth_fix(fix_text)
+        AIRWAYS, AWY_GRAPH = _parse_earth_awy(awy_text)
+        XPLANE_LOADED = True
+        print(f"[FlyBrief] XPlane loaded: {len(FIXES)} fixes, {len(AIRWAYS)} airways, "
+              f"{len(AWY_GRAPH)} graph nodes")
+
+        # кеш только fixes + airways (граф перестраивается при загрузке — быстро)
+        _save_json_cache(AIRWAYS_CACHE, {"fixes": FIXES, "airways": AIRWAYS})
+    except Exception as e:
+        print(f"[FlyBrief] XPlane parse fail: {e}")
+        XPLANE_LOADED = False
 
 
-load_all()
+def build_navaid_graph():
+    """Fallback-граф: navaids, соединённые если расстояние ≤ GRAPH_EDGE_MAX_NM.
+    Используется когда X-Plane airways недоступны."""
+    global AWY_GRAPH
+    if XPLANE_LOADED and AWY_GRAPH:
+        return  # уже есть граф из airways
+
+    print("[FlyBrief] building fallback navaid graph...")
+    useful = ("VOR", "VOR-DME", "VORTAC", "TACAN", "NDB-DME", "NDB")
+    items = [(ident, nav) for ident, nav in NAVAIDS.items() if nav["type"] in useful]
+    n = len(items)
+    gr = {}
+    for i in range(n):
+        ident_i, nav_i = items[i]
+        for j in range(i + 1, n):
+            ident_j, nav_j = items[j]
+            if abs(nav_i["lat"] - nav_j["lat"]) > 5 or abs(nav_i["lon"] - nav_j["lon"]) > 5:
+                continue
+            d = dist(nav_i["lat"], nav_i["lon"], nav_j["lat"], nav_j["lon"])
+            if d <= GRAPH_EDGE_MAX_NM:
+                gr.setdefault(ident_i, []).append((ident_j, "DCT"))
+                gr.setdefault(ident_j, []).append((ident_i, "DCT"))
+    AWY_GRAPH = gr
+    print(f"[FlyBrief] fallback graph: {len(gr)} nodes")
 
 
 # ============================================================
@@ -306,8 +464,7 @@ def gc_interpolate(lat1, lon1, lat2, lon2, step_nm=200):
     p2, l2 = math.radians(lat2), math.radians(lon2)
     d = 2 * math.asin(math.sqrt(
         math.sin((p2 - p1) / 2) ** 2 +
-        math.cos(p1) * math.cos(p2) * math.sin((l2 - l1) / 2) ** 2
-    ))
+        math.cos(p1) * math.cos(p2) * math.sin((l2 - l1) / 2) ** 2))
     total_nm = d * 3440.065
     if total_nm < step_nm:
         return []
@@ -327,94 +484,75 @@ def gc_interpolate(lat1, lon1, lat2, lon2, step_nm=200):
 
 
 # ============================================================
-# ГРАФ NAVAIDS
+# ЗАГРУЗКА ВСЕГО
 # ============================================================
-def build_graph():
-    """Строит граф navaids: узлы — VOR/VORTAC/TACAN/NDB, рёбра — ≤ GRAPH_EDGE_MAX_NM."""
-    global GRAPH
-    GRAPH = {}
+load_ourairports()
+load_xplane_navdata()
+build_navaid_graph()
 
-    # только 'сильные' навигационные точки для графа
-    useful_types = ("VOR", "VOR-DME", "VORTAC", "TACAN", "NDB-DME", "NDB")
-    nodes = {ident: nav for ident, nav in NAVAIDS.items()
-             if nav["type"] in useful_types}
-
-    print(f"[FlyBrief] building graph from {len(nodes)} navaids...")
-    t0 = time.time()
-
-    # O(n^2) — 5000^2 = 25M сравнений. Приемлемо 10-20 сек.
-    # Ускоряем: только если разница по координатам < 5 градусов
-    items = list(nodes.items())
-    n = len(items)
-    for i in range(n):
-        ident_i, nav_i = items[i]
-        neighbors = []
-        lat_i, lon_i = nav_i["lat"], nav_i["lon"]
-        for j in range(i + 1, n):
-            ident_j, nav_j = items[j]
-            lat_j, lon_j = nav_j["lat"], nav_j["lon"]
-            if abs(lat_i - lat_j) > 5 or abs(lon_i - lon_j) > 5:
-                continue
-            d = dist(lat_i, lon_i, lat_j, lon_j)
-            if d <= GRAPH_EDGE_MAX_NM:
-                neighbors.append((ident_j, d))
-                GRAPH.setdefault(ident_j, []).append((ident_i, d))
-        GRAPH.setdefault(ident_i, []).extend(neighbors)
-
-    print(f"[FlyBrief] graph built: {len(GRAPH)} nodes, "
-          f"{sum(len(v) for v in GRAPH.values()) // 2} edges, {time.time()-t0:.1f}s")
-
-
-build_graph()
+DB_LOADED_AT = time.time()
 
 
 # ============================================================
-# A* ROUTER
+# A* ПО AIRWAYS / GRAPH
 # ============================================================
-def _find_nearest_navaid(lat, lon, max_nm=80):
-    """Ищет ближайший navaid к точке в пределах max_nm. Возвращает ident или None."""
-    best, best_d = None, 999999
+def _all_points():
+    """Единый словарь ident -> {lat, lon} для A* (fixes + navaids)."""
+    pts = {}
+    for ident, fx in FIXES.items():
+        pts[ident] = {"lat": fx["lat"], "lon": fx["lon"]}
     for ident, nav in NAVAIDS.items():
-        if nav["type"] not in ("VOR", "VOR-DME", "VORTAC", "TACAN", "NDB-DME", "NDB"):
+        if ident not in pts:
+            pts[ident] = {"lat": nav["lat"], "lon": nav["lon"]}
+    return pts
+
+
+ALL_PTS = _all_points()
+
+
+def _find_nearest_pt(lat, lon, max_nm=80):
+    """Ищет ближайшую точку в ALL_PTS, которая есть в графе AWY_GRAPH."""
+    best, best_d = None, 999999.0
+    for ident in AWY_GRAPH.keys():
+        p = ALL_PTS.get(ident)
+        if not p:
             continue
-        d = dist(lat, lon, nav["lat"], nav["lon"])
+        d = dist(lat, lon, p["lat"], p["lon"])
         if d < best_d:
-            best_d = d
-            best = ident
+            best_d, best = d, ident
     return best if best_d <= max_nm else None
 
 
-def astar_route(dep_icao, arr_icao):
-    """A* по графу navaids. Возвращает list точек [{id, lat, lon}] или None."""
+def astar_graph(dep_icao, arr_icao):
+    """A* по AWY_GRAPH (airways или navaid-fallback).
+    Возвращает (points, uses_airways) или (None, False)."""
     if dep_icao not in DB or arr_icao not in DB:
-        return None
-    if not GRAPH:
-        return None
+        return None, False
+    if not AWY_GRAPH:
+        return None, False
 
     dep = DB[dep_icao]
     arr = DB[arr_icao]
 
-    start = _find_nearest_navaid(dep["lat"], dep["lon"], max_nm=120)
-    goal = _find_nearest_navaid(arr["lat"], arr["lon"], max_nm=120)
-    if not start or not goal:
-        return None
-    if start == goal:
-        return None
+    start = _find_nearest_pt(dep["lat"], dep["lon"], max_nm=120)
+    goal = _find_nearest_pt(arr["lat"], arr["lon"], max_nm=120)
+    if not start or not goal or start == goal:
+        return None, False
 
-    # A* с евклидовой эвристикой (в NM)
     open_set = [(0.0, start)]
     came_from = {}
+    came_awy = {}
     g_score = {start: 0.0}
     visited = set()
-
-    # предохранитель от бесконечного цикла
-    max_iter = 20000
     iterations = 0
+    max_iter = 25000
+
+    goal_pt = ALL_PTS[goal]
 
     while open_set:
         iterations += 1
         if iterations > max_iter:
-            return None
+            return None, False
 
         _, current = heapq.heappop(open_set)
         if current in visited:
@@ -423,37 +561,116 @@ def astar_route(dep_icao, arr_icao):
 
         if current == goal:
             # восстановить путь
-            path_ids = [current]
-            while current in came_from:
-                current = came_from[current]
-                path_ids.append(current)
-            path_ids.reverse()
+            path = [current]
+            awys = []
+            cur = current
+            while cur in came_from:
+                prev = came_from[cur]
+                path.append(prev)
+                awys.append(came_awy.get(cur, "DCT"))
+                cur = prev
+            path.reverse()
+            awys.reverse()
 
-            # добавить сам dep и arr аэропорты в начало/конец
+            # построить points
             pts = [{"id": dep_icao, "lat": dep["lat"], "lon": dep["lon"]}]
-            for nid in path_ids:
-                nav = NAVAIDS[nid]
-                pts.append({"id": nid, "lat": nav["lat"], "lon": nav["lon"]})
+            used_awy = False
+            for idx, ident in enumerate(path):
+                p = ALL_PTS.get(ident)
+                if not p:
+                    continue
+                pts.append({"id": ident, "lat": p["lat"], "lon": p["lon"]})
+                if idx < len(awys) and awys[idx] != "DCT":
+                    used_awy = True
             pts.append({"id": arr_icao, "lat": arr["lat"], "lon": arr["lon"]})
-            return pts
+            return pts, used_awy
 
-        cur_nav = NAVAIDS[current]
-        for neighbor, d in GRAPH.get(current, []):
+        cur_pt = ALL_PTS[current]
+        for neighbor, awy_name in AWY_GRAPH.get(current, []):
             if neighbor in visited:
                 continue
+            nb_pt = ALL_PTS.get(neighbor)
+            if not nb_pt:
+                continue
+            d = dist(cur_pt["lat"], cur_pt["lon"], nb_pt["lat"], nb_pt["lon"])
             tentative = g_score[current] + d
             if tentative < g_score.get(neighbor, 1e18):
                 came_from[neighbor] = current
+                came_awy[neighbor] = awy_name
                 g_score[neighbor] = tentative
-                nb = NAVAIDS[neighbor]
-                h = dist(nb["lat"], nb["lon"], arr["lat"], arr["lon"])
+                h = dist(nb_pt["lat"], nb_pt["lon"], goal_pt["lat"], goal_pt["lon"])
                 heapq.heappush(open_set, (tentative + h, neighbor))
 
+    return None, False
+
+
+# ============================================================
+# NAVIGRAPH API (опционально — если ключи в env)
+# ============================================================
+_nav_token = {"token": None, "expires_at": 0}
+
+
+def _nav_get_token():
+    if not NAVIGRAPH_CLIENT_ID or not NAVIGRAPH_CLIENT_SECRET:
+        return None
+    now = time.time()
+    if _nav_token["token"] and now < _nav_token["expires_at"] - 60:
+        return _nav_token["token"]
+    try:
+        data = urllib.parse.urlencode({
+            "grant_type": "client_credentials",
+            "client_id": NAVIGRAPH_CLIENT_ID,
+            "client_secret": NAVIGRAPH_CLIENT_SECRET,
+        }).encode()
+        req = urllib.request.Request(
+            "https://identity.api.navigraph.com/connect/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = json.loads(r.read().decode("utf-8"))
+        _nav_token["token"] = resp.get("access_token")
+        _nav_token["expires_at"] = now + int(resp.get("expires_in", 3600))
+        return _nav_token["token"]
+    except Exception as e:
+        print(f"[Navigraph] token error: {e}")
+        return None
+
+
+def navigraph_route(dep, arr):
+    token = _nav_get_token()
+    if not token:
+        return None
+    try:
+        params = urllib.parse.urlencode({
+            "origin": dep, "destination": arr,
+            "aircraft": "B738", "cruiseAltitude": 35000,
+        })
+        url = f"https://api.navigraph.com/v1/routes/generate?{params}"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "FlyBrief/0.6",
+        })
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        nodes = data.get("waypoints") or data.get("route", {}).get("nodes") or []
+        pts = []
+        for n in nodes:
+            if n.get("lat") is None or n.get("lon") is None:
+                continue
+            pts.append({
+                "id": n.get("identifier") or n.get("ident") or "WPT",
+                "lat": float(n["lat"]), "lon": float(n["lon"]),
+            })
+        if len(pts) >= 3:
+            return pts
+    except Exception as e:
+        print(f"[Navigraph] route error: {e}")
     return None
 
 
 # ============================================================
-# MANUAL ROUTES (реальные трассы)
+# MANUAL ROUTES
 # ============================================================
 MANUAL_ROUTES = {
     ("ULLI", "UUWW"): [
@@ -508,7 +725,7 @@ def fetch_fpdb_route(dep, arr):
     try:
         url = f"https://api.flightplandatabase.com/search/plan?fromICAO={dep}&toICAO={arr}&limit=1"
         req = urllib.request.Request(url, headers={
-            "User-Agent": "FlyBrief/0.5",
+            "User-Agent": "FlyBrief/0.6",
             "X-API-Key": FLIGHTPLANDB_KEY,
             "Accept": "application/json",
         })
@@ -521,11 +738,8 @@ def fetch_fpdb_route(dep, arr):
         for n in nodes:
             if n.get("lat") is None or n.get("lon") is None:
                 continue
-            pts.append({
-                "id": n.get("ident") or n.get("name") or "WPT",
-                "lat": float(n["lat"]),
-                "lon": float(n["lon"]),
-            })
+            pts.append({"id": n.get("ident") or n.get("name") or "WPT",
+                        "lat": float(n["lat"]), "lon": float(n["lon"])})
         if len(pts) >= 3:
             return pts
     except Exception as e:
@@ -534,23 +748,19 @@ def fetch_fpdb_route(dep, arr):
 
 
 # ============================================================
-# SID / STAR
+# SID/STAR
 # ============================================================
-# Реальные процедуры для 15 аэропортов (пример; ты можешь дописать).
-# Ключ: ICAO -> {"SID": {rwy: [points]}, "STAR": {rwy: [points]}}
 SID_STAR = {
     "EDDF": {
         "SID": {
             "18":  [{"id": "MARUN", "lat": 49.7500, "lon": 9.0000},
                     {"id": "MOGTI", "lat": 49.2500, "lon": 9.9000}],
             "25C": [{"id": "MARUN", "lat": 49.7500, "lon": 9.0000}],
-            "07C": [{"id": "SOBRA", "lat": 50.5000, "lon": 9.5000}],
         },
         "STAR": {
             "18":  [{"id": "AKANU", "lat": 48.8500, "lon": 10.7000},
                     {"id": "ROKIL", "lat": 48.5000, "lon": 11.3000}],
             "25C": [{"id": "AKANU", "lat": 48.8500, "lon": 10.7000}],
-            "07C": [{"id": "ROKIL", "lat": 48.5000, "lon": 11.3000}],
         },
     },
     "EDDM": {
@@ -745,23 +955,21 @@ def _pick_default_runway(icao, target_lat, target_lon):
 
 
 def generate_sid_generic(icao, rwy_id, next_lat, next_lon, step_nm=20):
-    """Generic SID: строит точки в направлении СЛЕДУЮЩЕЙ точки маршрута,
-    а не по курсу полосы (это был баг в v0.4)."""
     apt = DB[icao]
-    brg_to_next = bearing(apt["lat"], apt["lon"], next_lat, next_lon)
+    brg = bearing(apt["lat"], apt["lon"], next_lat, next_lon)
     pts = []
     for i, d in enumerate([step_nm, step_nm * 2], 1):
-        la, lo = move_point(apt["lat"], apt["lon"], brg_to_next, d)
+        la, lo = move_point(apt["lat"], apt["lon"], brg, d)
         pts.append({"id": f"SID{i:02d}", "lat": round(la, 4), "lon": round(lo, 4)})
     return pts
 
 
 def generate_star_generic(icao, rwy_id, prev_lat, prev_lon, step_nm=20):
     apt = DB[icao]
-    brg_from_prev = bearing(prev_lat, prev_lon, apt["lat"], apt["lon"])
+    brg = bearing(prev_lat, prev_lon, apt["lat"], apt["lon"])
     pts = []
     for i, d in enumerate([step_nm * 2, step_nm], 1):
-        la, lo = move_point(apt["lat"], apt["lon"], (brg_from_prev + 180) % 360, d)
+        la, lo = move_point(apt["lat"], apt["lon"], (brg + 180) % 360, d)
         pts.append({"id": f"STAR{i:02d}", "lat": round(la, 4), "lon": round(lo, 4)})
     pts.reverse()
     return pts
@@ -789,9 +997,7 @@ def build_star(icao, rwy_id, prev_lat, prev_lon):
 # ВЫБОР МАРШРУТА
 # ============================================================
 def get_route(dep, arr, dep_rwy=None, arr_rwy=None):
-    """Возвращает (points, source, dep_rwy_used, arr_rwy_used)."""
     dep_rwy_used, arr_rwy_used = dep_rwy, arr_rwy
-
     if not dep_rwy_used:
         r = _pick_default_runway(dep, DB[arr]["lat"], DB[arr]["lon"])
         dep_rwy_used = r["id"] if r else None
@@ -799,7 +1005,6 @@ def get_route(dep, arr, dep_rwy=None, arr_rwy=None):
         r = _pick_default_runway(arr, DB[dep]["lat"], DB[dep]["lon"])
         arr_rwy_used = r["id"] if r else None
 
-    # Тело маршрута
     key = (dep, arr)
     body = None
     source = None
@@ -808,28 +1013,29 @@ def get_route(dep, arr, dep_rwy=None, arr_rwy=None):
         body = [dict(p) for p in MANUAL_ROUTES[key]]
         source = "manual"
     else:
-        fpdb = fetch_fpdb_route(dep, arr)
-        if fpdb:
-            body = fpdb
-            source = "fpdb"
+        nav = navigraph_route(dep, arr)
+        if nav:
+            body, source = nav, "navigraph"
         else:
-            astar = astar_route(dep, arr)
-            if astar and len(astar) >= 3:
-                body = astar
-                source = "astar"
+            fpdb = fetch_fpdb_route(dep, arr)
+            if fpdb:
+                body, source = fpdb, "fpdb"
             else:
-                # GC fallback
-                p_dep, p_arr = DB[dep], DB[arr]
-                mid = gc_interpolate(p_dep["lat"], p_dep["lon"],
-                                     p_arr["lat"], p_arr["lon"], step_nm=200)
-                body = [{"id": dep, "lat": p_dep["lat"], "lon": p_dep["lon"]}]
-                for i, (la, lo) in enumerate(mid, 1):
-                    body.append({"id": f"DCT{i:02d}",
-                                 "lat": round(la, 4), "lon": round(lo, 4)})
-                body.append({"id": arr, "lat": p_arr["lat"], "lon": p_arr["lon"]})
-                source = "gc"
+                astar_pts, used_awy = astar_graph(dep, arr)
+                if astar_pts:
+                    body = astar_pts
+                    source = "airways" if used_awy else "astar"
+                else:
+                    p_dep, p_arr = DB[dep], DB[arr]
+                    mid = gc_interpolate(p_dep["lat"], p_dep["lon"],
+                                         p_arr["lat"], p_arr["lon"], step_nm=200)
+                    body = [{"id": dep, "lat": p_dep["lat"], "lon": p_dep["lon"]}]
+                    for i, (la, lo) in enumerate(mid, 1):
+                        body.append({"id": f"DCT{i:02d}",
+                                     "lat": round(la, 4), "lon": round(lo, 4)})
+                    body.append({"id": arr, "lat": p_arr["lat"], "lon": p_arr["lon"]})
+                    source = "gc"
 
-    # SID/STAR
     first_body = body[0] if body else {"lat": DB[dep]["lat"], "lon": DB[dep]["lon"]}
     last_body = body[-1] if body else {"lat": DB[arr]["lat"], "lon": DB[arr]["lon"]}
 
@@ -849,9 +1055,6 @@ def get_route(dep, arr, dep_rwy=None, arr_rwy=None):
     return final, source, dep_rwy_used, arr_rwy_used
 
 
-# ============================================================
-# ПОИСК АЛЬТЕРНАТИВНОГО АЭРОПОРТА
-# ============================================================
 def find_automatic_alternate(arr_icao):
     if arr_icao not in DB:
         return arr_icao
@@ -880,7 +1083,7 @@ def get_metar(icao):
         return c[1]
     try:
         url = f"https://aviationweather.gov/api/data/metar?ids={icao.upper()}&format=json"
-        req = urllib.request.Request(url, headers={"User-Agent": "FlyBrief/0.5"})
+        req = urllib.request.Request(url, headers={"User-Agent": "FlyBrief/0.6"})
         with urllib.request.urlopen(req, timeout=6) as response:
             data = json.loads(response.read().decode("utf-8"))
             if isinstance(data, list) and len(data) > 0:
@@ -914,8 +1117,7 @@ def get_charts(icao):
     if country == "US":
         links.insert(0, {"name": "AirNav (FAA, official)",
                          "url": f"https://www.airnav.com/airport/{icao}",
-                         "embed": True,
-                         "embed_url": f"https://www.airnav.com/airport/{icao}"})
+                         "embed": True, "embed_url": f"https://www.airnav.com/airport/{icao}"})
     elif country in ("RU", "KZ", "BY"):
         links.insert(0, {"name": "ЦАИ ГА (RU)", "url": "https://caica.ru/", "embed": False})
     elif country == "GB":
@@ -950,10 +1152,14 @@ def airports_stats():
         "airports": len(DB),
         "runways": len(RUNWAYS),
         "navaids": len(NAVAIDS),
-        "graph_nodes": len(GRAPH),
-        "graph_edges": sum(len(v) for v in GRAPH.values()) // 2,
-        "loaded_at": DB_LOADED_AT,
+        "fixes": len(FIXES),
+        "airways": len(AIRWAYS),
+        "graph_nodes": len(AWY_GRAPH),
+        "graph_edges": sum(len(v) for v in AWY_GRAPH.values()) // 2,
+        "xplane_loaded": XPLANE_LOADED,
+        "navigraph_enabled": bool(NAVIGRAPH_CLIENT_ID and NAVIGRAPH_CLIENT_SECRET),
         "fpdb_enabled": bool(FLIGHTPLANDB_KEY),
+        "loaded_at": DB_LOADED_AT,
     }
 
 
@@ -1001,8 +1207,7 @@ def calc(dep: str, arr: str, ac: str, dep_rwy: str = "", arr_rwy: str = ""):
 
     alt = find_automatic_alternate(arr)
     path_points, route_source, used_dep_rwy, used_arr_rwy = get_route(
-        dep, arr, dep_rwy or None, arr_rwy or None
-    )
+        dep, arr, dep_rwy or None, arr_rwy or None)
 
     d_main = 0.0
     for i in range(len(path_points) - 1):
@@ -1071,6 +1276,8 @@ def calc(dep: str, arr: str, ac: str, dep_rwy: str = "", arr_rwy: str = ""):
         },
         "airports_count": len(DB),
         "navaids_count":  len(NAVAIDS),
+        "fixes_count":    len(FIXES),
+        "airways_count":  len(AIRWAYS),
     }
 
 
@@ -1078,7 +1285,6 @@ def calc(dep: str, arr: str, ac: str, dep_rwy: str = "", arr_rwy: str = ""):
 def download_pln(dep: str, arr: str, dep_rwy: str = "", arr_rwy: str = ""):
     dep = dep.upper().strip()
     arr = arr.upper().strip()
-
     if dep not in DB:
         raise HTTPException(400, f"Departure airport '{dep}' not in database")
     if arr not in DB:
