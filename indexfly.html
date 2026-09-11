@@ -5,28 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlyBrief — Flight Planning</title>
 
-<!-- OpenLayers 9.2.4 -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@9.2.4/ol.css">
 <script src="https://cdn.jsdelivr.net/npm/ol@9.2.4/dist/ol.js"></script>
 
 <style>
   :root{
-    --bg:#0b0f14;
-    --panel:#111820;
-    --panel-2:#0e141b;
-    --border:#1e2a36;
-    --text:#c9d6e3;
-    --muted:#6b7c8f;
-    --accent:#ff8a3d;
-    --accent-2:#22d3ee;
-    --ok:#39d98a;
-    --warn:#ffd166;
-    --err:#ff5c5c;
+    --bg:#0b0f14; --panel:#111820; --panel-2:#0e141b; --border:#1e2a36;
+    --text:#c9d6e3; --muted:#6b7c8f; --accent:#ff8a3d; --accent-2:#22d3ee;
+    --ok:#39d98a; --warn:#ffd166; --err:#ff5c5c;
   }
   *{box-sizing:border-box}
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
     font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,sans-serif}
-  #app{display:grid;grid-template-rows:auto 1fr;height:100%}
+  #app{display:grid;grid-template-rows:auto auto auto 1fr;height:100%}
 
   header{
     display:flex;align-items:center;gap:12px;
@@ -38,6 +29,13 @@
   header .status{font-size:11px;color:var(--muted)}
   header .status b{color:var(--ok)}
 
+  #banner{
+    display:none;padding:8px 14px;font-size:12px;
+    background:#3a1d1d;color:#ffb3b3;border-bottom:1px solid #5a2626
+  }
+  #banner.show{display:block}
+  #banner b{color:#ff8080}
+
   .tabs{display:flex;gap:2px;padding:0 14px;background:var(--panel);
     border-bottom:1px solid var(--border)}
   .tab{padding:8px 14px;cursor:pointer;color:var(--muted);
@@ -45,7 +43,6 @@
   .tab.active{color:#fff;border-bottom-color:var(--accent)}
 
   main{display:grid;grid-template-columns:360px 1fr;height:100%;overflow:hidden}
-  main.hide-side{grid-template-columns:0 1fr}
 
   aside{
     border-right:1px solid var(--border);background:var(--panel-2);
@@ -56,8 +53,7 @@
     text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
   .field input,.field select{
     width:100%;padding:6px 8px;background:#0a0f15;color:var(--text);
-    border:1px solid var(--border);border-radius:4px;font-size:13px;
-    font-family:inherit;
+    border:1px solid var(--border);border-radius:4px;font-size:13px;font-family:inherit;
   }
   .field input:focus,.field select:focus{outline:none;border-color:var(--accent)}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -72,42 +68,40 @@
   .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
   .btn.ghost:hover{border-color:var(--accent);color:#fff}
 
-  .hint{font-size:11px;color:var(--muted);margin-top:6px}
+  .hint{font-size:11px;color:var(--muted);margin-top:6px;word-break:break-word}
 
-  #map{position:relative;width:100%;height:100%;background:#05080c}
-
-  #right{
-    position:relative;display:none;grid-template-rows:auto 1fr;
-    height:100%;overflow:hidden;background:#05080c
+  /* правая часть */
+  #right-pane{position:relative;overflow:hidden;background:#05080c}
+  #map{width:100%;height:100%}
+  #ofp-view,#charts-view,#weather-view{
+    display:none;position:absolute;inset:0;overflow:auto;
   }
-  #right.show{display:grid}
-  #right-header{
+  #ofp-view.show,#charts-view.show,#weather-view.show{display:block}
+
+  #ofp-header{
     display:flex;gap:10px;align-items:center;padding:8px 12px;
-    background:var(--panel);border-bottom:1px solid var(--border);font-size:12px
+    background:var(--panel);border-bottom:1px solid var(--border);font-size:12px;
+    position:sticky;top:0;z-index:5
   }
-  #right-header .spacer{flex:1}
-  #right-header button{
+  #ofp-header .spacer{flex:1}
+  #ofp-header button{
     background:transparent;border:1px solid var(--border);color:var(--text);
     padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px
   }
-  #right-header button:hover{border-color:var(--accent);color:#fff}
+  #ofp-header button:hover{border-color:var(--accent);color:#fff}
 
   #ofp{
-    margin:0;padding:14px;overflow:auto;
-    background:#05080c;color:var(--ok);
+    margin:0;padding:14px;color:var(--ok);
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
-    font-size:12px;line-height:1.35;white-space:pre;height:100%
+    font-size:12px;line-height:1.35;white-space:pre
   }
 
-  #charts-view,#weather-view{
-    display:none;padding:20px;overflow:auto;height:100%;background:#05080c
-  }
-  #charts-view.show,#weather-view.show{display:block}
+  #charts-view,#weather-view{padding:20px;background:#05080c}
+  #charts-view h3,#weather-view h3{margin-top:0;color:#fff}
 
   .chart-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
   .chart-card{
-    padding:12px;background:var(--panel);border:1px solid var(--border);
-    border-radius:6px
+    padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:6px
   }
   .chart-card a{color:var(--accent-2);text-decoration:none}
   .chart-card a:hover{text-decoration:underline}
@@ -125,8 +119,7 @@
   #toast{
     position:fixed;bottom:20px;right:20px;padding:10px 16px;border-radius:6px;
     background:var(--panel);border:1px solid var(--border);color:var(--text);
-    font-size:12px;opacity:0;pointer-events:none;transition:opacity .25s;
-    max-width:400px
+    font-size:12px;opacity:0;pointer-events:none;transition:opacity .25s;max-width:400px;z-index:100
   }
   #toast.show{opacity:1}
   #toast.err{border-color:var(--err);color:var(--err)}
@@ -149,15 +142,17 @@
     <div class="status" id="status">loading…</div>
   </header>
 
+  <div id="banner"></div>
+
   <div class="tabs">
     <div class="tab active" data-tab="plan">Flight Plan</div>
     <div class="tab" data-tab="charts">Charts</div>
     <div class="tab" data-tab="weather">Weather</div>
   </div>
 
-  <main id="main">
+  <main>
     <aside>
-      <!-- === План полёта === -->
+      <!-- Flight Plan -->
       <div id="form-plan">
         <div class="field">
           <label for="dep">Departure (ICAO)</label>
@@ -202,13 +197,12 @@
 
         <button class="btn" id="btn-calc">Generate OFP</button>
         <button class="btn ghost" id="btn-download" style="margin-top:8px">Download .pln</button>
-
         <div class="hint" id="hint">
-          Тип полосы подгружается автоматически при вводе ICAO.
+          Полосы подгружаются автоматически при вводе ICAO.
         </div>
       </div>
 
-      <!-- === Charts === -->
+      <!-- Charts -->
       <div id="form-charts" style="display:none">
         <div class="field">
           <label for="charts-icao">Airport ICAO</label>
@@ -217,7 +211,7 @@
         <button class="btn" id="btn-charts">Load charts</button>
       </div>
 
-      <!-- === Weather === -->
+      <!-- Weather -->
       <div id="form-weather" style="display:none">
         <div class="field">
           <label for="weather-icao">Airport ICAO</label>
@@ -227,19 +221,21 @@
       </div>
     </aside>
 
-    <div id="map"></div>
+    <div id="right-pane">
+      <div id="map"></div>
 
-    <div id="right">
-      <div id="right-header">
-        <span id="right-title">OFP</span>
-        <div class="spacer"></div>
-        <button id="btn-close-right">×</button>
+      <div id="ofp-view">
+        <div id="ofp-header">
+          <span id="ofp-title">OFP</span>
+          <div class="spacer"></div>
+          <button id="btn-close-ofp">закрыть</button>
+        </div>
+        <pre id="ofp"></pre>
       </div>
-      <pre id="ofp"></pre>
-    </div>
 
-    <div id="charts-view"></div>
-    <div id="weather-view"></div>
+      <div id="charts-view"></div>
+      <div id="weather-view"></div>
+    </div>
   </main>
 </div>
 
@@ -249,15 +245,13 @@
 "use strict";
 
 /* ============================================================
-   ГЛОБАЛЬНЫЕ
+   СОСТОЯНИЕ
    ============================================================ */
 const state = {
   map: null,
-  routeLayer: null,
-  wptLayer: null,
-  aptLayer: null,
-  altLayer: null,
+  routeLayer: null, wptLayer: null, aptLayer: null, altLayer: null,
   lastRoute: null,
+  xplaneLoaded: false,
 };
 
 /* ============================================================
@@ -275,10 +269,15 @@ function $(id){ return document.getElementById(id); }
 async function api(path, opts){
   const r = await fetch(path, opts);
   if (!r.ok){
-    let txt = await r.text();
+    let txt;
+    try { txt = await r.text(); } catch(e){ txt = ""; }
     throw new Error(`${r.status} ${txt.slice(0,200)}`);
   }
   return r.json();
+}
+
+function escapeHtml(s){
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 
 /* ============================================================
@@ -295,9 +294,7 @@ function initMap(){
   state.altLayer = new ol.layer.Vector({
     source: new ol.source.Vector(),
     style: new ol.style.Style({
-      stroke: new ol.style.Stroke({
-        color: "#a855f7", width: 2, lineDash: [6,6]
-      }),
+      stroke: new ol.style.Stroke({ color: "#a855f7", width: 2, lineDash: [6,6] }),
     }),
     zIndex: 25,
   });
@@ -310,8 +307,7 @@ function initMap(){
         stroke: new ol.style.Stroke({ color: "#0a0f15", width: 1 }),
       }),
       text: new ol.style.Text({
-        text: "",
-        font: "11px monospace",
+        text: "", font: "11px monospace",
         fill: new ol.style.Fill({ color: "#22d3ee" }),
         stroke: new ol.style.Stroke({ color: "#05080c", width: 3 }),
         offsetY: -12,
@@ -328,8 +324,7 @@ function initMap(){
         stroke: new ol.style.Stroke({ color: "#05080c", width: 1.5 }),
       }),
       text: new ol.style.Text({
-        text: "",
-        font: "bold 12px monospace",
+        text: "", font: "bold 12px monospace",
         fill: new ol.style.Fill({ color: "#ff8a3d" }),
         stroke: new ol.style.Stroke({ color: "#05080c", width: 3 }),
         offsetY: 18,
@@ -360,9 +355,6 @@ function initMap(){
   });
 }
 
-/* ============================================================
-   РИСОВАНИЕ МАРШРУТА
-   ============================================================ */
 function clearLayers(){
   state.routeLayer.getSource().clear();
   state.wptLayer.getSource().clear();
@@ -372,22 +364,17 @@ function clearLayers(){
 
 function drawRoute(route){
   clearLayers();
-
   const pts = route.points || [];
   if (!pts.length) return;
 
-  // линия маршрута
   const coords = pts.map(p => ol.proj.fromLonLat([p.lon, p.lat]));
   const line = new ol.Feature({ geometry: new ol.geom.LineString(coords) });
   state.routeLayer.getSource().addFeature(line);
 
-  // waypoints
   for (const p of pts){
     const f = new ol.Feature({
       geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat]))
     });
-    f.set("ident", p.ident);
-    f.set("awy", p.awy || "");
     const style = state.wptLayer.getStyle().clone();
     const txt = p.awy ? `${p.ident} [${p.awy}]` : p.ident;
     style.getText().setText(txt);
@@ -395,7 +382,6 @@ function drawRoute(route){
     state.wptLayer.getSource().addFeature(f);
   }
 
-  // аэропорты (первый и последний)
   for (const idx of [0, pts.length - 1]){
     const p = pts[idx];
     const f = new ol.Feature({
@@ -407,24 +393,24 @@ function drawRoute(route){
     state.aptLayer.getSource().addFeature(f);
   }
 
-  // extent
   const extent = ol.extent.boundingExtent(coords);
   state.map.getView().fit(extent, { padding: [60,60,60,60], duration: 500, maxZoom: 9 });
 }
 
 /* ============================================================
-   RWY SELECTS
+   RWY
    ============================================================ */
 function fillRunwaySelect(selectId, runways){
   const sel = $(selectId);
   sel.innerHTML = "";
   if (!runways || !runways.length){
-    sel.innerHTML = "<option value=''>— нет данных —</option>";
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = "— нет данных (OurAirports) —";
+    sel.appendChild(o);
     return;
   }
   const opt0 = document.createElement("option");
-  opt0.value = "";
-  opt0.textContent = "— выбери полосу —";
+  opt0.value = ""; opt0.textContent = "— выбери полосу —";
   sel.appendChild(opt0);
 
   for (const rw of runways){
@@ -443,18 +429,20 @@ async function loadRunways(icao, selectId){
     sel.innerHTML = "<option value=''>— выбери полосу —</option>";
     return;
   }
-  sel.innerHTML = "<option value=''>…</option>";
+  sel.innerHTML = "<option value=''>…загрузка…</option>";
   try{
     const data = await api(`/runways?icao=${encodeURIComponent(icao.toUpperCase())}`);
     fillRunwaySelect(selectId, data.runways || []);
   }catch(e){
     console.error(e);
-    sel.innerHTML = "<option value=''>— ошибка —</option>";
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = "— ошибка загрузки —";
+    sel.innerHTML = ""; sel.appendChild(o);
   }
 }
 
 /* ============================================================
-   ОБРАБОТЧИКИ
+   ДЕЙСТВИЯ
    ============================================================ */
 async function handleCalc(){
   const dep = $("dep").value.trim().toUpperCase();
@@ -464,8 +452,7 @@ async function handleCalc(){
     return;
   }
   const body = {
-    dep: dep,
-    arr: arr,
+    dep, arr,
     ac: $("ac").value,
     pax: parseInt($("pax").value || "150", 10),
     cargo: parseFloat($("cargo").value || "0"),
@@ -486,15 +473,19 @@ async function handleCalc(){
     state.lastRoute = route;
     drawRoute(route);
 
-    // OFP
     $("ofp").textContent = route.ofp_text || "(no ofp_text in response)";
-    $("right").classList.add("show");
-    $("right-title").textContent = `OFP — ${route.dep} → ${route.arr} (${route.source})`;
+    showView("ofp");
+    $("ofp-title").textContent = `OFP — ${route.dep} → ${route.arr} (${route.source})`;
 
     $("status").innerHTML =
       `source=<b>${route.source}</b> · ${Math.round(route.distance_nm)} NM · ` +
       `wps=${(route.points||[]).length}`;
-    toast("OFP готов", "ok");
+
+    if (route.source === "gc"){
+      toast("Маршрут — прямая (GC). X-Plane navdata не загружены.", "err");
+    } else {
+      toast("OFP готов (" + route.source + ")", "ok");
+    }
   }catch(e){
     console.error(e);
     toast("Ошибка: " + e.message, "err");
@@ -504,13 +495,10 @@ async function handleCalc(){
   }
 }
 
-async function handleDownload(){
+function handleDownload(){
   const dep = $("dep").value.trim().toUpperCase();
   const arr = $("arr").value.trim().toUpperCase();
-  if (dep.length < 4 || arr.length < 4){
-    toast("Введи ICAO", "err");
-    return;
-  }
+  if (dep.length < 4 || arr.length < 4){ toast("Введи ICAO", "err"); return; }
   window.location.href = `/download_pln?dep=${encodeURIComponent(dep)}&arr=${encodeURIComponent(arr)}`;
 }
 
@@ -519,11 +507,12 @@ async function handleCharts(){
   if (icao.length < 4){ toast("Введи ICAO", "err"); return; }
   try{
     const data = await api(`/charts?icao=${encodeURIComponent(icao)}`);
-    const html = (data.charts || []).map(c =>
-      `<div class="chart-card"><a href="${c.url}" target="_blank" rel="noopener">${c.name}</a></div>`
+    const cards = (data.charts || []).map(c =>
+      `<div class="chart-card"><a href="${c.url}" target="_blank" rel="noopener">${escapeHtml(c.name)}</a></div>`
     ).join("");
-    $("charts-view").innerHTML = `<h3>Charts — ${data.icao}</h3>
-      <div class="chart-list">${html || "<p>Нет чартов.</p>"}</div>`;
+    $("charts-view").innerHTML = `<h3>Charts — ${escapeHtml(data.icao)}</h3>
+      <div class="chart-list">${cards || "<p>Нет чартов.</p>"}</div>`;
+    showView("charts");
   }catch(e){
     toast("Ошибка: " + e.message, "err");
   }
@@ -537,41 +526,44 @@ async function handleWeather(){
     const raw = data.metar || "(нет данных)";
     $("weather-view").innerHTML = `
       <div class="metar-box">
-        <div class="icao">${data.icao}</div>
-        <div class="raw">${raw.replace(/</g,"&lt;")}</div>
+        <div class="icao">${escapeHtml(data.icao)}</div>
+        <div class="raw">${escapeHtml(raw)}</div>
       </div>`;
+    showView("weather");
   }catch(e){
     toast("Ошибка: " + e.message, "err");
   }
 }
 
 /* ============================================================
-   ВКЛАДКИ
+   ВИДЫ
    ============================================================ */
+function showView(name){
+  $("ofp-view").classList.toggle("show", name === "ofp");
+  $("charts-view").classList.toggle("show", name === "charts");
+  $("weather-view").classList.toggle("show", name === "weather");
+  $("map").style.display = (name === "map") ? "" : "none";
+}
+
 function setTab(name){
   document.querySelectorAll(".tab").forEach(t => {
     t.classList.toggle("active", t.dataset.tab === name);
   });
-  const isPlan = name === "plan";
-  $("form-plan").style.display = isPlan ? "" : "none";
-  $("form-charts").style.display = name === "charts" ? "" : "none";
+  $("form-plan").style.display    = name === "plan"    ? "" : "none";
+  $("form-charts").style.display  = name === "charts"  ? "" : "none";
   $("form-weather").style.display = name === "weather" ? "" : "none";
 
-  $("map").style.display = isPlan ? "" : "none";
-  $("right").classList.toggle("show", isPlan && !!state.lastRoute);
-
-  $("charts-view").classList.toggle("show", name === "charts");
-  $("weather-view").classList.toggle("show", name === "weather");
-
-  if (!isPlan){
-    $("main").classList.add("hide-side");
+  if (name === "plan"){
+    showView(state.lastRoute ? "ofp" : "map");
+  } else if (name === "charts"){
+    showView($("charts-view").innerHTML ? "charts" : "map");
   } else {
-    $("main").classList.remove("hide-side");
+    showView($("weather-view").innerHTML ? "weather" : "map");
   }
 }
 
 /* ============================================================
-   ПОИСК АЭРОПОРТОВ (datalist)
+   ПОДСКАЗКИ АЭРОПОРТОВ
    ============================================================ */
 async function loadAirportSuggestions(q, datalistId){
   if (!q || q.length < 2) return;
@@ -594,11 +586,30 @@ async function loadAirportSuggestions(q, datalistId){
 async function refreshStatus(){
   try{
     const s = await api("/airports/stats");
-    const ok = s.xplane_loaded ? "X-Plane <b>ON</b>" : "X-Plane <b style='color:#ff5c5c'>off</b>";
+    state.xplaneLoaded = !!s.xplane_loaded;
+
     $("status").innerHTML =
-      `airports ${s.airports} · fixes ${s.fixes} · airways ${s.airways} · ${ok}`;
+      `airports ${s.airports} · fixes ${s.fixes} · airways ${s.airways} · ` +
+      (s.xplane_loaded
+        ? "X-Plane <b>ON</b>"
+        : "X-Plane <b style='color:#ff5c5c'>OFF</b>");
+
+    const banner = $("banner");
+    if (!s.xplane_loaded){
+      banner.innerHTML =
+        "<b>X-Plane navdata не загружены.</b> Маршруты строятся по Great Circle (прямая). " +
+        "Проверь /airports/stats → load_state. " +
+        "Скорее всего Render не смог скачать earth_*.txt с raw.githubusercontent. " +
+        "Перезапусти сервис (Manual Deploy → Restart) и подожди 2–3 минуты.";
+      banner.classList.add("show");
+    } else {
+      banner.classList.remove("show");
+    }
   }catch(e){
     $("status").textContent = "backend offline";
+    const banner = $("banner");
+    banner.innerHTML = "<b>Backend недоступен.</b> Render может просыпаться до 50 секунд — подожди и обнови.";
+    banner.classList.add("show");
   }
 }
 
@@ -610,27 +621,25 @@ window.addEventListener("DOMContentLoaded", () => {
   refreshStatus();
   setInterval(refreshStatus, 30000);
 
-  // вкладки
   document.querySelectorAll(".tab").forEach(t => {
     t.addEventListener("click", () => setTab(t.dataset.tab));
   });
 
-  // кнопки
   $("btn-calc").addEventListener("click", handleCalc);
   $("btn-download").addEventListener("click", handleDownload);
   $("btn-charts").addEventListener("click", handleCharts);
   $("btn-weather").addEventListener("click", handleWeather);
-  $("btn-close-right").addEventListener("click", () => {
-    $("right").classList.remove("show");
+  $("btn-close-ofp").addEventListener("click", () => {
+    showView("map");
   });
 
-  // DEP / ARR
-  let depTimer, arrTimer;
+  // DEP/ARR
+  let tDep, tArr;
   $("dep").addEventListener("input", e => {
     const v = e.target.value.toUpperCase();
     e.target.value = v;
-    clearTimeout(depTimer);
-    depTimer = setTimeout(() => {
+    clearTimeout(tDep);
+    tDep = setTimeout(() => {
       loadRunways(v, "dep_rwy");
       loadAirportSuggestions(v, "dep-list");
     }, 400);
@@ -638,21 +647,20 @@ window.addEventListener("DOMContentLoaded", () => {
   $("arr").addEventListener("input", e => {
     const v = e.target.value.toUpperCase();
     e.target.value = v;
-    clearTimeout(arrTimer);
-    arrTimer = setTimeout(() => {
+    clearTimeout(tArr);
+    tArr = setTimeout(() => {
       loadRunways(v, "arr_rwy");
       loadAirportSuggestions(v, "arr-list");
     }, 400);
   });
 
-  // ENTER = посчитать
   document.addEventListener("keydown", e => {
     if (e.key === "Enter" && (e.target.id === "dep" || e.target.id === "arr")){
       handleCalc();
     }
   });
 
-  // первичная загрузка полос для дефолтных UUEE/ULLI
+  // стартовые RWY
   loadRunways("UUEE", "dep_rwy");
   loadRunways("ULLI", "arr_rwy");
 });
