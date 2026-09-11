@@ -3,19 +3,17 @@
 <head>
     <meta charset="utf-8">
     <title>FlyBrief - Flight Planning</title>
-    <!-- Подключаем свежую и стабильную версию Leaflet -->
     <link rel="stylesheet" href="https://unpkg.com"/>
     <style>
-        html, body { height: 100%; margin: 0; padding: 0; background: #121212; color: #e0e0e0; font-family: 'Courier New', monospace; }
-        body { display: flex; box-sizing: border-box; padding: 20px; gap: 20px; }
-        .panel { width: 420px; min-width: 420px; padding: 25px; background: #1a1a1a; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.6); border: 1px solid #2d2d2d; box-sizing: border-box; overflow-y: auto; height: 100%; }
-        #map-container { flex-grow: 1; height: 100%; position: relative; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; overflow: hidden; background: #222; }
-        #map { width: 100%; height: 100%; position: absolute; top: 0; bottom: 0; left: 0; right: 0; }
+        body { font-family: 'Courier New', monospace; margin: 0; padding: 20px; background: #121212; color: #e0e0e0; }
+        .wrapper { display: flex; gap: 20px; height: 90vh; width: 100%; }
+        .panel { width: 420px; min-width: 420px; padding: 25px; background: #1a1a1a; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.6); border: 1px solid #2d2d2d; overflow-y: auto; }
+        #map { flex-grow: 1; height: 100%; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; background: #222; }
         h2 { color: #ff9800; border-bottom: 2px solid #ff9800; padding-bottom: 10px; margin-top: 0; font-size: 22px; }
         label { display: block; margin: 10px 0 5px; font-weight: bold; color: #b0b0b0; }
         input, select, button { width: 100%; padding: 12px; margin-bottom: 15px; box-sizing: border-box; font-size: 14px; font-family: inherit; background: #2a2a2a; color: #fff; border: 1px solid #444; border-radius: 4px; }
         input:focus, select:focus { border-color: #ff9800; outline: none; }
-        button { background: #ff9800; color: #000; border: none; cursor: pointer; font-weight: bold; font-size: 15px; transition: background 0.2s; }
+        button { background: #ff9800; color: #000; border: none; cursor: pointer; font-weight: bold; font-size: 15px; }
         button:hover { background: #e08600; }
         .btn-download { background: #4caf50; color: #fff; display: none; }
         .btn-download:hover { background: #388e3c; }
@@ -24,43 +22,44 @@
     </style>
 </head>
 <body>
-    <div class="panel">
-        <h2>FlyBrief Pro v2.0</h2>
-        <label>Вылет (ICAO):</label>
-        <input id="dep" value="ULLI">
-        <label>Прилет (ICAO):</label>
-        <input id="arr" value="UUWW">
-        <label>Запасной (ICAO):</label>
-        <input id="alt" value="UUEE">
-        <label>Тип ВС (Самолет):</label>
-        <select id="ac">
-            <option value="B738">Boeing 737-800</option>
-            <option value="A20N">Airbus A320neo</option>
-            <option value="B77W">Boeing 777-300ER</option>
-            <option value="C172">Cessna 172 Skyhawk</option>
-        </select>
-        <button onclick="calc()">СГЕНЕРИРОВАТЬ OFP</button>
-        <button id="dl_btn" class="btn-download" onclick="downloadPlan()">СКАЧАТЬ ПЛАН (.PLN)</button>
-        <div id="res" style="display:none">
-            <h3>Operational Flight Plan (OFP):</h3>
-            <pre id="ofp_block"></pre>
+    <div class="wrapper">
+        <div class="panel">
+            <h2>FlyBrief Pro v2.0</h2>
+            <label>Вылет (ICAO):</label>
+            <input id="dep" value="ULLI">
+            <label>Прилет (ICAO):</label>
+            <input id="arr" value="UUWW">
+            <label>Запасной (ICAO):</label>
+            <input id="alt" value="UUEE">
+            <label>Тип ВС (Самолет):</label>
+            <select id="ac">
+                <option value="B738">Boeing 737-800</option>
+                <option value="A20N">Airbus A320neo</option>
+                <option value="B77W">Boeing 777-300ER</option>
+                <option value="C172">Cessna 172 Skyhawk</option>
+            </select>
+            <button onclick="calc()">СГЕНЕРИРОВАТЬ OFP</button>
+            <button id="dl_btn" class="btn-download" onclick="downloadPlan()">СКАЧАТЬ ПЛАН (.PLN)</button>
+            <div id="res" style="display:none">
+                <h3>Operational Flight Plan (OFP):</h3>
+                <pre id="ofp_block"></pre>
+            </div>
         </div>
-    </div>
-    <div id="map-container">
         <div id="map"></div>
     </div>
 
     <script src="https://unpkg.com"></script>
     <script>
-        // Инициализируем карту с фиксацией размеров
+        // Создаем карту
         const map = L.map("map").setView([55.75, 37.62], 5);
         
-        // Надежная подложка, работающая везде
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors'
+        // Подключаем стандартный, неубиваемый шлюз OpenStreetMap
+        L.tileLayer('https://openstreetmap.org{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap'
         }).addTo(map);
-        
-        // Принудительно обновляем размер карты при загрузке
+
+        // Принудительный сброс размеров через полсекунды для отрисовки
         setTimeout(() => { map.invalidateSize(); }, 500);
 
         let r1 = null, r2 = null, m = [];
@@ -88,16 +87,19 @@
                     m.push(marker);
                     return [pt.lat, pt.lon]
                 });
+                
                 r1 = L.polyline(polyPoints, {color: "#ff9800", weight: 4}).addTo(map);
                 const lastPoint = polyPoints[polyPoints.length - 1];
                 r2 = L.polyline([lastPoint, [data.alt_lat, data.alt_lon]], {color: "#9c27b0", weight: 3, dashArray: "5,10"}).addTo(map);
+                
                 const mAlt = L.marker([data.alt_lat, data.alt_lon]).addTo(map).bindPopup("ALTN: " + data.alt_id);
                 m.push(mAlt);
+                
                 const group = new L.featureGroup([r1, r2]);
                 map.fitBounds(group.getBounds(), {padding: [50, 50]});
                 
-                // Перерисовываем карту после построения маршрута
-                setTimeout(() => { map.invalidateSize(); }, 200);
+                // Принудительно заставляем карту проснуться и перерисоваться
+                map.invalidateSize();
             } catch (e) {
                 console.log(e)
             }
