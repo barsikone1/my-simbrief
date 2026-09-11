@@ -3,12 +3,12 @@
 <head>
     <meta charset="utf-8">
     <title>FlyBrief - Flight Planning</title>
-    <!-- Подключаем скрипты карты из стабильного и открытого источника Яндекс -->
-    <link rel="stylesheet" href="https://yastatic.net"/>
     <style>
         body { font-family: 'Courier New', monospace; margin: 0; padding: 20px; display: flex; gap: 20px; background: #121212; color: #e0e0e0; height: 95vh; box-sizing: border-box; }
         .panel { width: 420px; min-width: 420px; padding: 25px; background: #1a1a1a; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.6); border: 1px solid #2d2d2d; overflow-y: auto; height: 100%; box-sizing: border-box; }
-        #map { flex-grow: 1; height: 100%; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; background: #222; }
+        .map-container { flex-grow: 1; height: 100%; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; background: #0a0a0c; display: flex; flex-direction: column; padding: 15px; box-sizing: border-box; position: relative; }
+        #radar-canvas { width: 100%; flex-grow: 1; background: #070709; border: 1px solid #222; border-radius: 4px; }
+        .map-title { color: #ff9800; font-size: 14px; font-weight: bold; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }
         h2 { color: #ff9800; border-bottom: 2px solid #ff9800; padding-bottom: 10px; margin-top: 0; font-size: 22px; }
         label { display: block; margin: 10px 0 5px; font-weight: bold; color: #b0b0b0; }
         input, select, button { width: 100%; padding: 12px; margin-bottom: 15px; box-sizing: border-box; font-size: 14px; font-family: inherit; background: #2a2a2a; color: #fff; border: 1px solid #444; border-radius: 4px; }
@@ -23,7 +23,7 @@
 </head>
 <body>
     <div class="panel">
-        <h2>FlyBrief Pro v2.5</h2>
+        <h2>FlyBrief Pro v3.0</h2>
         <label>Вылет (ICAO):</label>
         <input id="dep" value="ULLI">
         <label>Прилет (ICAO):</label>
@@ -44,19 +44,37 @@
             <pre id="ofp_block"></pre>
         </div>
     </div>
-    <div id="map"></div>
+    
+    <div class="map-container">
+        <div class="map-title">FlyBrief Tactical ND (Navigation Display)</div>
+        <canvas id="radar-canvas"></canvas>
+    </div>
 
-    <!-- Подключаем JavaScript карты из стабильного источника Яндекс -->
-    <script src="https://yastatic.net"></script>
     <script>
-        const map = L.map("map").setView([55.75, 37.62], 5);
-        
-        // Открытая подложка OpenStreetMap
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 18
-        }).addTo(map);
+        const canvas = document.getElementById("radar-canvas");
+        const ctx = canvas.getContext("2d");
 
-        let r1 = null, r2 = null, m = [];
+        // Подстраиваем внутреннее разрешение холста под экран
+        function resizeCanvas() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+            drawGrid();
+        }
+        window.addEventListener('resize', resizeCanvas);
+        setTimeout(resizeCanvas, 100);
+
+        function drawGrid() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = "#16161a";
+            ctx.lineWidth = 1;
+            // Рисуем сетку радара
+            for(let x = 0; x < canvas.width; x += 40) {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+            }
+            for(let y = 0; y < canvas.height; y += 40) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+            }
+        }
 
         async function calc() {
             const d = document.getElementById("dep").value.toUpperCase().trim();
@@ -68,7 +86,7 @@
                 if (!res.ok) return;
                 const data = await res.json();
                 
-                // Расчет эшелона
+                // Навигационный расчет эшелона
                 let crz_alt = "FL360 (EVEN)";
                 if (c === "C172") crz_alt = "5000 FT";
                 else if (data.path && data.path.length > 0) {
@@ -85,30 +103,72 @@
                 document.getElementById("res").style.display = "block";
                 document.getElementById("dl_btn").style.display = "block";
                 
-                if (r1) map.removeLayer(r1);
-                if (r2) map.removeLayer(r2);
-                m.forEach(i => map.removeLayer(i));
-                m = [];
-                
+                // РИСУЕМ ТАКТИЧЕСКИЙ МАРШРУТ (TACTICAL ND)
                 if (data.path && data.path.length > 0) {
-                    const polyPoints = data.path.map(pt => {
-                        const marker = L.marker([pt.lat, pt.lon]).addTo(map).bindPopup(`<b>${pt.id}</b>`);
-                        m.push(marker);
-                        return [pt.lat, pt.lon];
+                    drawGrid();
+                    
+                    // Находим крайние точки для масштабирования маршрута на весь экран холста
+                    const lats = data.path.map(p => p.lat);
+                    const lons = data.path.map(p => p.lon);
+                    lats.push(data.alt_lat); lons.push(data.alt_lon);
+                    
+                    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+                    const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+                    
+                    const padding = 60;
+                    function scale(lat, lon) {
+                        const x = padding + ((lon - minLon) / (maxLon - minLon || 1)) * (canvas.width - padding * 2);
+                        // В компьютерной графике ось Y идет сверху вниз, переворачиваем широту
+                        const y = canvas.height - padding - ((lat - minLat) / (maxLat - minLat || 1)) * (canvas.height - padding * 2);
+                        return {x, y};
+                    }
+                    
+                    // 1. Рисуем сплошной оранжевый основной маршрут по точкам
+                    ctx.strokeStyle = "#ff9800";
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    
+                    data.path.forEach((pt, index) => {
+                        const pos = scale(pt.lat, pt.lon);
+                        if (index === 0) ctx.moveTo(pos.x, pos.y);
+                        else ctx.lineTo(pos.x, pos.y);
+                    });
+                    ctx.stroke();
+                    
+                    // 2. Рисуем фиолетовый пунктирный трек до запасного аэродрома
+                    const lastMainPos = scale(data.path[data.path.length-1].lat, data.path[data.path.length-1].lon);
+                    const altPos = scale(data.alt_lat, data.alt_lon);
+                    
+                    ctx.strokeStyle = "#9c27b0";
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 6]);
+                    ctx.beginPath();
+                    ctx.moveTo(lastMainPos.x, lastMainPos.y);
+                    ctx.lineTo(altPos.x, altPos.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]); // сброс пунктира
+                    
+                    // 3. Отрисовываем светящиеся точки (Waypoints) и подписи к ним
+                    data.path.forEach((pt, index) => {
+                        const pos = scale(pt.lat, pt.lon);
+                        ctx.fillStyle = index === 0 || index === data.path.length-1 ? "#ff9800" : "#00e5ff";
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, 5, 0, 2 * Math.PI);
+                        ctx.fill();
+                        
+                        ctx.fillStyle = "#fff";
+                        ctx.font = "bold 11px Courier New";
+                        ctx.fillText(pt.id, pos.x + 8, pos.y - 5);
                     });
                     
-                    r1 = L.polyline(polyPoints, {color: "#ff9800", weight: 4}).addTo(map);
-                    const lastPoint = polyPoints[polyPoints.length - 1];
-                    r2 = L.polyline([lastPoint, [data.alt_lat, data.alt_lon]], {color: "#9c27b0", weight: 3, dashArray: "5,10"}).addTo(map);
-                    
-                    const mAlt = L.marker([data.alt_lat, data.alt_lon]).addTo(map).bindPopup("ALTN: " + data.alt_id);
-                    m.push(mAlt);
-                    
-                    const group = new L.featureGroup([r1, r2]);
-                    map.fitBounds(group.getBounds(), {padding: [50, 50]});
+                    // 4. Ставим точку запасного
+                    ctx.fillStyle = "#9c27b0";
+                    ctx.beginPath();
+                    ctx.arc(altPos.x, altPos.y, 5, 0, 2 * Math.PI);
+                    ctx.fill();
+                    ctx.fillStyle = "#fff";
+                    ctx.fillText(data.alt_id + " (ALTN)", altPos.x + 8, altPos.y - 5);
                 }
-                
-                setTimeout(() => { map.invalidateSize(); }, 300);
             } catch (e) {
                 console.log(e);
             }
@@ -119,9 +179,6 @@
             const a = document.getElementById("arr").value.toUpperCase().trim();
             window.location.href = `/download_pln?dep=${d}&arr=${a}`;
         }
-        
-        // Обновляем размер карты при старте страницы
-        setTimeout(() => { map.invalidateSize(); }, 500);
     </script>
 </body>
 </html>
