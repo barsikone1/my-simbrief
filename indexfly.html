@@ -4,110 +4,96 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>FlyBrief — Flight Planning</title>
-
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v9.2.4/ol.css" />
 <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
-
 <style>
-  :root {
-    --bg-0: #16171a; --bg-1: #1a1a1a; --bg-2: #202226; --bg-3: #26282d;
-    --border: #2e3138; --text: #d8dadd; --text-dim: #8a8f97;
-    --accent: #ff9800; --accent-dim: #b56d00;
-    --green: #4caf50; --term: #39ff14; --purple: #b266ff; --cyan: #00e5ff;
-  }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0; height: 100%;
-    background: var(--bg-0); color: var(--text);
-    font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 13px; overflow: hidden;
-  }
-  #app { display: grid; grid-template-columns: 380px 1fr; height: 100vh; width: 100vw; }
-
-  #sidebar { background: var(--bg-1); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow-y: auto; }
-
-  #brand { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; background: linear-gradient(180deg, #1d1f23 0%, #16171a 100%); }
-  #brand .logo { width: 26px; height: 26px; border-radius: 4px; background: var(--accent); display: flex; align-items: center; justify-content: center; color: #16171a; font-weight: 800; font-size: 14px; }
-  #brand .title { font-weight: 700; letter-spacing: 0.5px; font-size: 15px; }
-  #brand .title span { color: var(--accent); }
-  #brand .sub { color: var(--text-dim); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; margin-left: auto; }
-
-  .panel { border-bottom: 1px solid var(--border); padding: 12px 14px 14px; }
-  .panel h3 { margin: 0 0 10px 0; font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--accent); font-weight: 700; display: flex; align-items: center; gap: 6px; }
-  .panel h3::before { content: ""; width: 4px; height: 12px; background: var(--accent); border-radius: 1px; }
-
-  .field { display: flex; flex-direction: column; margin-bottom: 8px; }
-  .field label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 4px; }
-  .field input, .field select {
-    background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
-    padding: 7px 9px; border-radius: 3px; font-size: 13px; outline: none;
-    transition: border-color .15s, background .15s; font-family: inherit;
-  }
-  .field input:focus, .field select:focus { border-color: var(--accent); background: var(--bg-3); }
-  .field input::placeholder { color: #555a62; }
-
-  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-
-  .btn {
-    background: var(--accent); color: #16171a; border: none; padding: 9px 12px;
-    border-radius: 3px; font-weight: 700; font-size: 12px; letter-spacing: 0.6px;
-    text-transform: uppercase; cursor: pointer; transition: background .15s, transform .05s;
-    width: 100%; margin-top: 4px; font-family: inherit;
-  }
-  .btn:hover { background: #ffb13d; }
-  .btn:active { transform: translateY(1px); }
-  .btn:disabled { background: var(--bg-3); color: var(--text-dim); cursor: not-allowed; }
-  .btn.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent-dim); }
-  .btn.secondary:hover { background: rgba(255,152,0,0.08); }
-
-  #ofp {
-    background: #0d0f10; border-top: 1px solid var(--border); flex: 1;
-    padding: 10px 12px; font-family: "Courier New", monospace; font-size: 11.5px;
-    color: var(--term); overflow-y: auto; white-space: pre-wrap;
-    min-height: 200px; text-shadow: 0 0 4px rgba(57,255,20,0.25);
-  }
-  #ofp .err { color: #ff5555; text-shadow: 0 0 4px rgba(255,85,85,0.4); }
-
-  #map-wrap { position: relative; height: 100vh; width: 100%; background: #0a0b0d; }
-  #map { width: 100%; height: 100%; }
-
-  #hud {
-    position: absolute; top: 12px; left: 12px;
-    background: rgba(22,23,26,0.85); border: 1px solid var(--border);
-    padding: 6px 10px; border-radius: 3px; font-size: 11px;
-    color: var(--text-dim); letter-spacing: 0.5px; backdrop-filter: blur(4px);
-    pointer-events: none;
-  }
-  #hud b { color: var(--accent); }
-  #hud .src-manual { color: var(--green); }
-  #hud .src-fpdb { color: var(--green); }
-  #hud .src-gc { color: #ffcc66; }
-
-  #legend {
-    position: absolute; bottom: 12px; right: 12px;
-    background: rgba(22,23,26,0.9); border: 1px solid var(--border);
-    padding: 8px 12px; border-radius: 3px; font-size: 11px;
-    color: var(--text-dim); line-height: 1.7; backdrop-filter: blur(4px);
-  }
-  #legend .sw { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: middle; border-radius: 2px; }
-
-  #charts-bar {
-    position: absolute; bottom: 12px; left: 12px;
-    background: rgba(22,23,26,0.92); border: 1px solid var(--border);
-    border-radius: 3px; padding: 8px 10px; font-size: 11px;
-    backdrop-filter: blur(4px); max-width: 320px;
-  }
-  #charts-bar h4 { margin: 0 0 6px 0; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); }
-  #charts-bar .grp { margin-bottom: 6px; }
-  #charts-bar .grp:last-child { margin-bottom: 0; }
-  #charts-bar .grp b { color: var(--text); font-size: 11px; }
-  #charts-bar a { color: var(--cyan); text-decoration: none; margin-right: 8px; font-size: 10.5px; }
-  #charts-bar a:hover { text-decoration: underline; }
-
-  ::-webkit-scrollbar { width: 8px; height: 8px; }
-  ::-webkit-scrollbar-track { background: var(--bg-1); }
-  ::-webkit-scrollbar-thumb { background: #33363c; border-radius: 4px; }
-  ::-webkit-scrollbar-thumb:hover { background: #44474e; }
+  :root{--bg-0:#16171a;--bg-1:#1a1a1a;--bg-2:#202226;--bg-3:#26282d;--border:#2e3138;
+    --text:#d8dadd;--text-dim:#8a8f97;--accent:#ff9800;--accent-dim:#b56d00;
+    --green:#4caf50;--term:#39ff14;--purple:#b266ff;--cyan:#00e5ff;}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;background:var(--bg-0);color:var(--text);
+    font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px;overflow:hidden}
+  #app{display:grid;grid-template-columns:400px 1fr;height:100vh;width:100vw}
+  #sidebar{background:var(--bg-1);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+  #brand{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;
+    background:linear-gradient(180deg,#1d1f23 0%,#16171a 100%)}
+  #brand .logo{width:26px;height:26px;border-radius:4px;background:var(--accent);display:flex;
+    align-items:center;justify-content:center;color:#16171a;font-weight:800;font-size:14px}
+  #brand .title{font-weight:700;letter-spacing:.5px;font-size:15px}
+  #brand .title span{color:var(--accent)}
+  #brand .sub{color:var(--text-dim);font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-left:auto}
+  .panel{border-bottom:1px solid var(--border);padding:12px 14px 14px}
+  .panel h3{margin:0 0 10px 0;font-size:11px;text-transform:uppercase;letter-spacing:1.2px;
+    color:var(--accent);font-weight:700;display:flex;align-items:center;gap:6px}
+  .panel h3::before{content:"";width:4px;height:12px;background:var(--accent);border-radius:1px}
+  .field{display:flex;flex-direction:column;margin-bottom:8px}
+  .field label{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-dim);margin-bottom:4px}
+  .field input,.field select{background:var(--bg-2);border:1px solid var(--border);color:var(--text);
+    padding:7px 9px;border-radius:3px;font-size:13px;outline:none;font-family:inherit;transition:border-color .15s,background .15s}
+  .field input:focus,.field select:focus{border-color:var(--accent);background:var(--bg-3)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .btn{background:var(--accent);color:#16171a;border:none;padding:9px 12px;border-radius:3px;
+    font-weight:700;font-size:12px;letter-spacing:.6px;text-transform:uppercase;cursor:pointer;
+    transition:background .15s,transform .05s;width:100%;margin-top:4px;font-family:inherit}
+  .btn:hover{background:#ffb13d}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{background:var(--bg-3);color:var(--text-dim);cursor:not-allowed}
+  .btn.secondary{background:transparent;color:var(--accent);border:1px solid var(--accent-dim)}
+  .btn.secondary:hover{background:rgba(255,152,0,.08)}
+  #ofp{background:#0d0f10;border-top:1px solid var(--border);flex:1;padding:10px 12px;
+    font-family:"Courier New",monospace;font-size:11.5px;color:var(--term);overflow-y:auto;
+    white-space:pre-wrap;min-height:180px;text-shadow:0 0 4px rgba(57,255,20,.25)}
+  #ofp .err{color:#ff5555;text-shadow:0 0 4px rgba(255,85,85,.4)}
+  #main{position:relative;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+  #tabs{display:flex;background:var(--bg-1);border-bottom:1px solid var(--border)}
+  .tab{padding:10px 18px;cursor:pointer;font-size:12px;text-transform:uppercase;letter-spacing:1px;
+    color:var(--text-dim);border-right:1px solid var(--border);transition:background .15s,color .15s}
+  .tab:hover{color:var(--text);background:var(--bg-2)}
+  .tab.active{color:var(--accent);background:var(--bg-2);border-bottom:2px solid var(--accent)}
+  .tab-content{display:none;flex:1;overflow:hidden;position:relative}
+  .tab-content.active{display:flex;flex-direction:column}
+  #map{width:100%;height:100%}
+  #hud{position:absolute;top:12px;left:12px;background:rgba(22,23,26,.85);border:1px solid var(--border);
+    padding:6px 10px;border-radius:3px;font-size:11px;color:var(--text-dim);letter-spacing:.5px;
+    backdrop-filter:blur(4px);pointer-events:none;z-index:5}
+  #hud b{color:var(--accent)}
+  #hud .src-manual{color:var(--green)}
+  #hud .src-fpdb{color:var(--green)}
+  #hud .src-gc{color:#ffcc66}
+  #legend{position:absolute;bottom:12px;right:12px;background:rgba(22,23,26,.9);border:1px solid var(--border);
+    padding:8px 12px;border-radius:3px;font-size:11px;color:var(--text-dim);line-height:1.7;
+    backdrop-filter:blur(4px);z-index:5}
+  #legend .sw{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:middle;border-radius:2px}
+  #charts-wrap{display:grid;grid-template-columns:280px 1fr;height:100%;width:100%}
+  #charts-list{background:var(--bg-1);border-right:1px solid var(--border);overflow-y:auto;padding:12px}
+  #charts-list h4{margin:0 0 8px 0;font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent)}
+  .icao-btn{display:block;width:100%;text-align:left;padding:8px 10px;margin-bottom:6px;
+    background:var(--bg-2);border:1px solid var(--border);color:var(--text);cursor:pointer;
+    border-radius:3px;font-family:inherit;font-size:12px;transition:border-color .15s}
+  .icao-btn:hover{border-color:var(--accent)}
+  .icao-btn.active{border-color:var(--accent);background:var(--bg-3);color:var(--accent)}
+  .icao-btn small{display:block;color:var(--text-dim);font-size:10px;margin-top:2px}
+  #charts-viewer{background:var(--bg-0);overflow:hidden;position:relative;display:flex;flex-direction:column}
+  #charts-viewer iframe{width:100%;height:100%;border:none;background:#fff;flex:1}
+  #charts-links{padding:8px 10px;background:var(--bg-1);border-bottom:1px solid var(--border);
+    display:flex;flex-wrap:wrap;gap:8px}
+  #charts-links a{color:var(--cyan);text-decoration:none;font-size:11px;padding:4px 8px;
+    background:var(--bg-2);border:1px solid var(--border);border-radius:3px}
+  #charts-links a:hover{border-color:var(--accent);color:var(--accent)}
+  .placeholder{padding:30px;text-align:center;color:var(--text-dim)}
+  #weather-wrap{padding:20px;overflow-y:auto;height:100%;width:100%}
+  .wx-card{background:var(--bg-1);border:1px solid var(--border);border-radius:4px;padding:14px 16px;margin-bottom:12px}
+  .wx-card h4{margin:0 0 8px 0;color:var(--accent);font-size:13px;letter-spacing:1px;text-transform:uppercase}
+  .wx-card .metar{font-family:"Courier New",monospace;color:var(--term);font-size:12.5px;
+    background:#0d0f10;padding:10px;border-radius:3px;text-shadow:0 0 4px rgba(57,255,20,.25);
+    word-break:break-all;line-height:1.5}
+  .wx-card .links{margin-top:10px}
+  .wx-card .links a{color:var(--cyan);text-decoration:none;font-size:11px;margin-right:12px}
+  .wx-card .links a:hover{text-decoration:underline}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-track{background:var(--bg-1)}
+  ::-webkit-scrollbar-thumb{background:#33363c;border-radius:4px}
+  ::-webkit-scrollbar-thumb:hover{background:#44474e}
 </style>
 </head>
 <body>
@@ -117,20 +103,22 @@
     <div id="brand">
       <div class="logo">F</div>
       <div class="title">Fly<span>Brief</span></div>
-      <div class="sub" id="aptCount">OFP v0.3</div>
+      <div class="sub" id="aptCount">OFP v0.4</div>
     </div>
 
     <div class="panel">
       <h3>Flight Info</h3>
       <div class="row">
-        <div class="field">
-          <label for="dep">Departure</label>
-          <input id="dep" type="text" placeholder="EDDF" maxlength="5" value="EDDF" />
-        </div>
-        <div class="field">
-          <label for="arr">Arrival</label>
-          <input id="arr" type="text" placeholder="EDDM" maxlength="5" value="EDDM" />
-        </div>
+        <div class="field"><label for="dep">Departure</label>
+          <input id="dep" type="text" placeholder="EDDF" maxlength="5" value="EDDF" /></div>
+        <div class="field"><label for="arr">Arrival</label>
+          <input id="arr" type="text" placeholder="EDDM" maxlength="5" value="EDDM" /></div>
+      </div>
+      <div class="row">
+        <div class="field"><label for="depRwy">DEP RWY</label>
+          <select id="depRwy"><option value="">— auto —</option></select></div>
+        <div class="field"><label for="arrRwy">ARR RWY</label>
+          <select id="arrRwy"><option value="">— auto —</option></select></div>
       </div>
       <div class="field">
         <label for="ac">Aircraft Type</label>
@@ -157,14 +145,10 @@
     <div class="panel">
       <h3>Aircraft Options</h3>
       <div class="row">
-        <div class="field">
-          <label for="pax">Pax</label>
-          <input id="pax" type="number" min="0" max="550" value="160" />
-        </div>
-        <div class="field">
-          <label for="cargo">Cargo (kg)</label>
-          <input id="cargo" type="number" min="0" max="50000" value="2000" />
-        </div>
+        <div class="field"><label for="pax">Pax</label>
+          <input id="pax" type="number" min="0" max="550" value="160" /></div>
+        <div class="field"><label for="cargo">Cargo (kg)</label>
+          <input id="cargo" type="number" min="0" max="50000" value="2000" /></div>
       </div>
     </div>
 
@@ -177,193 +161,272 @@
     <div id="ofp">// Awaiting flight plan generation...</div>
   </aside>
 
-  <main id="map-wrap">
-    <div id="map"></div>
-    <div id="hud">FlyBrief · <b>OpenLayers</b> · <span id="routeSource">Route: —</span></div>
-    <div id="legend">
-      <div><span class="sw" style="background:#ff9800"></span>Route / Airports</div>
-      <div><span class="sw" style="background:#00e5ff"></span>Waypoints</div>
-      <div><span class="sw" style="background:#b266ff"></span>Alternate (dashed)</div>
+  <main id="main">
+    <div id="tabs">
+      <div class="tab active" data-tab="plan">Flight Plan</div>
+      <div class="tab" data-tab="charts">Charts</div>
+      <div class="tab" data-tab="weather">Weather</div>
     </div>
-    <div id="charts-bar" style="display:none;">
-      <h4>Charts</h4>
-      <div id="charts-content"></div>
+
+    <div id="tab-plan" class="tab-content active">
+      <div id="map"></div>
+      <div id="hud">FlyBrief · <b>OpenLayers</b> · <span id="routeSource">Route: —</span></div>
+      <div id="legend">
+        <div><span class="sw" style="background:#ff9800"></span>Route / Airports</div>
+        <div><span class="sw" style="background:#00e5ff"></span>Waypoints</div>
+        <div><span class="sw" style="background:#66d9ff"></span>SID / STAR</div>
+        <div><span class="sw" style="background:#b266ff"></span>Alternate</div>
+      </div>
+    </div>
+
+    <div id="tab-charts" class="tab-content">
+      <div id="charts-wrap">
+        <div id="charts-list">
+          <h4>Airports</h4>
+          <div id="charts-apt-list"><div style="color:var(--text-dim);font-size:11px;">Сначала сгенерируй план</div></div>
+        </div>
+        <div id="charts-viewer">
+          <div class="placeholder">Выбери аэропорт слева, чтобы увидеть чарты</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-weather" class="tab-content">
+      <div id="weather-wrap">
+        <div class="wx-card"><h4>DEP</h4><div class="metar" id="wx-dep">—</div>
+          <div class="links">
+            <a href="https://www.windy.com" target="_blank" rel="noopener">Windy</a>
+            <a href="https://aviationweather.gov" target="_blank" rel="noopener">AviationWeather</a>
+          </div></div>
+        <div class="wx-card"><h4>ARR</h4><div class="metar" id="wx-arr">—</div>
+          <div class="links"><a href="https://www.windy.com" target="_blank" rel="noopener">Windy</a></div></div>
+        <div class="wx-card"><h4>ALTERNATE</h4><div class="metar" id="wx-alt">—</div></div>
+      </div>
     </div>
   </main>
 </div>
 
 <script>
+/* ================= CORE ================= */
 const API_BASE = "";
 const $ = (id) => document.getElementById(id);
-
 function setOFP(html, isError) {
-  const el = $("ofp");
-  el.innerHTML = isError ? `<span class="err">${html}</span>` : html;
+  $("ofp").innerHTML = isError ? `<span class="err">${html}</span>` : html;
 }
 
-/* ========= OpenLayers ========= */
-const routeSource = new ol.source.Vector();
-const wptSource   = new ol.source.Vector();
-const aptSource   = new ol.source.Vector();
-const altSource   = new ol.source.Vector();
-
-const routeLayer = new ol.layer.Vector({
-  source: routeSource,
-  style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#ff9800", width: 2.4 }) })
+/* ================= TABS ================= */
+document.querySelectorAll(".tab").forEach(t => {
+  t.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    $("tab-" + t.dataset.tab).classList.add("active");
+    if (t.dataset.tab === "plan") setTimeout(() => map.updateSize(), 50);
+  });
 });
 
-const wptLayer = new ol.layer.Vector({
-  source: wptSource,
-  style: (feature) => {
-    const id = feature.get("id") || "";
-    return new ol.style.Style({
-      image: new ol.style.RegularShape({
-        points: 3, radius: 6,
-        fill: new ol.style.Fill({ color: "#00e5ff" }),
-        stroke: new ol.style.Stroke({ color: "#0a0b0d", width: 1 })
-      }),
-      text: new ol.style.Text({
-        text: id, offsetY: -14,
-        font: "700 10px 'Courier New', monospace",
-        fill: new ol.style.Fill({ color: "#00e5ff" }),
-        stroke: new ol.style.Stroke({ color: "#0a0b0d", width: 3 })
-      })
-    });
-  }
-});
+/* ================= OPENLAYERS ================= */
+const routeSource  = new ol.source.Vector();
+const wptSource    = new ol.source.Vector();
+const aptSource    = new ol.source.Vector();
+const altSource    = new ol.source.Vector();
+const sidStarSource= new ol.source.Vector();
 
-const aptLayer = new ol.layer.Vector({
-  source: aptSource,
-  style: (feature) => {
-    const id = feature.get("id") || "";
-    return new ol.style.Style({
-      image: new ol.style.RegularShape({
-        points: 4, radius: 7, angle: Math.PI / 4,
-        fill: new ol.style.Fill({ color: "#ff9800" }),
-        stroke: new ol.style.Stroke({ color: "#16171a", width: 1.5 })
-      }),
-      text: new ol.style.Text({
-        text: id, offsetY: -16,
-        font: "700 11px 'Segoe UI', sans-serif",
-        fill: new ol.style.Fill({ color: "#ff9800" }),
-        stroke: new ol.style.Stroke({ color: "#0a0b0d", width: 3 })
-      })
-    });
-  }
-});
+const routeLayer = new ol.layer.Vector({ source: routeSource,
+  style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#ff9800", width: 2.4 }) }) });
 
-const altLayer = new ol.layer.Vector({
-  source: altSource,
-  style: new ol.style.Style({
-    stroke: new ol.style.Stroke({ color: "#b266ff", width: 2, lineDash: [8, 6] })
-  })
-});
+const sidStarLayer = new ol.layer.Vector({ source: sidStarSource,
+  style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#66d9ff", width: 1.8, lineDash: [6,4] }) }) });
 
-const baseLayer = new ol.layer.Tile({
-  source: new ol.source.XYZ({
-    url: "https://{a-d}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-    attributions: "© OpenStreetMap contributors © CARTO",
-    maxZoom: 19
-  })
-});
+const wptLayer = new ol.layer.Vector({ source: wptSource,
+  style: (f) => new ol.style.Style({
+    image: new ol.style.RegularShape({ points: 3, radius: 6,
+      fill: new ol.style.Fill({ color: "#00e5ff" }),
+      stroke: new ol.style.Stroke({ color: "#0a0b0d", width: 1 }) }),
+    text: new ol.style.Text({ text: f.get("id") || "", offsetY: -14,
+      font: "700 10px 'Courier New',monospace",
+      fill: new ol.style.Fill({ color: "#00e5ff" }),
+      stroke: new ol.style.Stroke({ color: "#0a0b0d", width: 3 }) })
+  }) });
+
+const aptLayer = new ol.layer.Vector({ source: aptSource,
+  style: (f) => new ol.style.Style({
+    image: new ol.style.RegularShape({ points: 4, radius: 7, angle: Math.PI/4,
+      fill: new ol.style.Fill({ color: "#ff9800" }),
+      stroke: new ol.style.Stroke({ color: "#16171a", width: 1.5 }) }),
+    text: new ol.style.Text({ text: f.get("id") || "", offsetY: -16,
+      font: "700 11px 'Segoe UI',sans-serif",
+      fill: new ol.style.Fill({ color: "#ff9800" }),
+      stroke: new ol.style.Stroke({ color: "#0a0b0d", width: 3 }) })
+  }) });
+
+const altLayer = new ol.layer.Vector({ source: altSource,
+  style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#b266ff", width: 2, lineDash: [8,6] }) }) });
+
+const baseLayer = new ol.layer.Tile({ source: new ol.source.XYZ({
+  url: "https://{a-d}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+  attributions: "© OpenStreetMap © CARTO", maxZoom: 19 }) });
 
 const map = new ol.Map({
   target: "map",
-  layers: [baseLayer, altLayer, routeLayer, wptLayer, aptLayer],
-  view: new ol.View({ center: ol.proj.fromLonLat([10.0, 50.0]), zoom: 5, minZoom: 2, maxZoom: 16 })
+  layers: [baseLayer, altLayer, sidStarLayer, routeLayer, wptLayer, aptLayer],
+  view: new ol.View({ center: ol.proj.fromLonLat([10,50]), zoom: 5, minZoom: 2, maxZoom: 16 })
 });
 
-/* ========= helpers ========= */
 function clearLayers() {
-  routeSource.clear(); wptSource.clear(); aptSource.clear(); altSource.clear();
+  routeSource.clear(); wptSource.clear(); aptSource.clear();
+  altSource.clear(); sidStarSource.clear();
 }
-
-function addAirport(lon, lat, ident) {
-  if (typeof lon !== "number" || typeof lat !== "number") return;
+function addAirport(lon,lat,id){
+  if(typeof lon!=="number"||typeof lat!=="number")return;
   aptSource.addFeature(new ol.Feature({
-    geometry: new ol.geom.Point(ol.proj.fromLonLat([lon, lat])),
-    id: ident || ""
-  }));
+    geometry: new ol.geom.Point(ol.proj.fromLonLat([lon,lat])), id: id||"" }));
 }
-
-function addWaypoint(lon, lat, ident) {
-  if (typeof lon !== "number" || typeof lat !== "number") return;
+function addWaypoint(lon,lat,id){
+  if(typeof lon!=="number"||typeof lat!=="number")return;
   wptSource.addFeature(new ol.Feature({
-    geometry: new ol.geom.Point(ol.proj.fromLonLat([lon, lat])),
-    id: ident || ""
-  }));
+    geometry: new ol.geom.Point(ol.proj.fromLonLat([lon,lat])), id: id||"" }));
 }
-
-function addRouteLine(coords) {
-  if (!coords || coords.length < 2) return;
-  const pts = coords.map(c => ol.proj.fromLonLat([c[0], c[1]]));
-  routeSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(pts) }));
+function addRouteLine(coords){
+  if(!coords||coords.length<2)return;
+  routeSource.addFeature(new ol.Feature({
+    geometry: new ol.geom.LineString(coords.map(c=>ol.proj.fromLonLat([c[0],c[1]]))) }));
 }
-
-function addAlternateLine(from, to) {
-  if (!from || !to) return;
-  const pts = [from, to].map(c => ol.proj.fromLonLat([c[0], c[1]]));
-  altSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(pts) }));
+function addSidStarLine(coords){
+  if(!coords||coords.length<2)return;
+  sidStarSource.addFeature(new ol.Feature({
+    geometry: new ol.geom.LineString(coords.map(c=>ol.proj.fromLonLat([c[0],c[1]]))) }));
 }
-
-function fitToAll() {
-  let extent = null;
-  [routeSource, wptSource, aptSource, altSource].forEach(src => {
-    const e = src.getExtent();
-    if (e && e.length === 4 && isFinite(e[0])) {
-      if (!extent) extent = e.slice();
-      else {
-        extent[0] = Math.min(extent[0], e[0]);
-        extent[1] = Math.min(extent[1], e[1]);
-        extent[2] = Math.max(extent[2], e[2]);
-        extent[3] = Math.max(extent[3], e[3]);
-      }
+function addAlternateLine(from,to){
+  if(!from||!to)return;
+  altSource.addFeature(new ol.Feature({
+    geometry: new ol.geom.LineString([from,to].map(c=>ol.proj.fromLonLat([c[0],c[1]]))) }));
+}
+function fitToAll(){
+  let ext=null;
+  [routeSource,wptSource,aptSource,altSource,sidStarSource].forEach(s=>{
+    const e=s.getExtent(); if(!e||!isFinite(e[0]))return;
+    if(!ext)ext=e.slice(); else {
+      ext[0]=Math.min(ext[0],e[0]); ext[1]=Math.min(ext[1],e[1]);
+      ext[2]=Math.max(ext[2],e[2]); ext[3]=Math.max(ext[3],e[3]);
     }
   });
-  if (extent) map.getView().fit(extent, { padding: [60, 60, 60, 60], duration: 700, maxZoom: 10 });
+  if(ext)map.getView().fit(ext,{padding:[60,60,60,60],duration:700,maxZoom:10});
 }
 
-/* ========= OFP ========= */
-function renderOFP(data) {
-  if (data.ofp_text) {
-    setOFP(data.ofp_text, false);
-    return;
-  }
-  const lines = [];
-  lines.push("================================================");
-  lines.push("  FLYBRIEF OFP");
-  lines.push("================================================");
-  lines.push("  Route source: " + (data.route_source || "?"));
-  lines.push("  Distance: " + (data.distance_nm || "?") + " NM");
-  lines.push("  ETE: " + (data.ete || "?"));
-  lines.push("  Fuel: " + (data.fuel_kg || "?") + " KG");
-  lines.push("  Alternate: " + (data.alternate || "?"));
-  lines.push("================================================");
-  setOFP(lines.join("\n"), false);
-}
+/* ================= RUNWAYS ================= */
+let runwaysLoadedFor = { dep:null, arr:null };
 
-/* ========= charts ========= */
-function renderCharts(charts) {
-  const bar = $("charts-bar");
-  const content = $("charts-content");
-  if (!charts) { bar.style.display = "none"; return; }
-
-  const order = [["dep", "DEP"], ["arr", "ARR"], ["alt", "ALTN"]];
-  let html = "";
-  order.forEach(([key, label]) => {
-    const c = charts[key];
-    if (!c) return;
-    html += `<div class="grp"><b>${label} ${c.icao}</b><br>`;
-    (c.links || []).slice(0, 4).forEach(l => {
-      html += `<a href="${l.url}" target="_blank" rel="noopener">${l.name}</a>`;
+async function loadRunways(icao, selectEl) {
+  selectEl.innerHTML = '<option value="">— loading —</option>';
+  try {
+    const res = await fetch(`${API_BASE}/runways?icao=${encodeURIComponent(icao)}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const list = data.runways || [];
+    if (!list.length) {
+      selectEl.innerHTML = '<option value="">— no runways —</option>';
+      return;
+    }
+    let html = '<option value="">— auto —</option>';
+    list.forEach(r => {
+      const len = r.length_ft ? Math.round(r.length_ft) + " ft" : "";
+      const hdg = (r.hdg != null) ? Math.round(r.hdg) + "°" : "";
+      html += `<option value="${r.id}">${r.id} ${hdg} ${len}</option>`;
     });
-    html += `</div>`;
-  });
-  content.innerHTML = html;
-  bar.style.display = "block";
+    selectEl.innerHTML = html;
+  } catch (e) {
+    console.error("runways error:", e);
+    selectEl.innerHTML = '<option value="">— error —</option>';
+  }
 }
 
-/* ========= main ========= */
+async function refreshRunways() {
+  const dep = ($("dep").value || "").trim().toUpperCase();
+  const arr = ($("arr").value || "").trim().toUpperCase();
+  if (dep.length >= 3 && dep !== runwaysLoadedFor.dep) {
+    runwaysLoadedFor.dep = dep;
+    await loadRunways(dep, $("depRwy"));
+  }
+  if (arr.length >= 3 && arr !== runwaysLoadedFor.arr) {
+    runwaysLoadedFor.arr = arr;
+    await loadRunways(arr, $("arrRwy"));
+  }
+}
+$("dep").addEventListener("blur", refreshRunways);
+$("arr").addEventListener("blur", refreshRunways);
+$("dep").addEventListener("change", refreshRunways);
+$("arr").addEventListener("change", refreshRunways);
+
+/* ================= CHARTS ================= */
+let chartsCache = {};
+
+function renderChartsList(charts) {
+  chartsCache = charts || {};
+  const list = $("charts-apt-list");
+  const order = [["dep","DEP"],["arr","ARR"],["alt","ALTN"]];
+  let html = "";
+  order.forEach(([key,label]) => {
+    const c = charts && charts[key];
+    if (!c) return;
+    const ctry = c.country ? "("+c.country+")" : "";
+    html += `<button class="icao-btn" data-icao="${c.icao}">${label} · ${c.icao}<small>${c.name||""} ${ctry}</small></button>`;
+  });
+  list.innerHTML = html || '<div style="color:var(--text-dim);font-size:11px;">Нет данных</div>';
+  list.querySelectorAll(".icao-btn").forEach(b => {
+    b.addEventListener("click", () => showCharts(b.dataset.icao));
+  });
+}
+
+function showCharts(icao) {
+  document.querySelectorAll("#charts-apt-list .icao-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.icao === icao);
+  });
+  let c = null;
+  if (chartsCache.dep && chartsCache.dep.icao === icao) c = chartsCache.dep;
+  else if (chartsCache.arr && chartsCache.arr.icao === icao) c = chartsCache.arr;
+  else if (chartsCache.alt && chartsCache.alt.icao === icao) c = chartsCache.alt;
+  if (!c) return;
+
+  const viewer = $("charts-viewer");
+  const linksHtml = '<div id="charts-links">' +
+    (c.links||[]).map(l => `<a href="${l.url}" target="_blank" rel="noopener">${l.name} ↗</a>`).join("") +
+    '</div>';
+
+  const embed = (c.links||[]).find(l => l.embed && l.embed_url);
+  let embedHtml;
+  if (embed) {
+    const proxied = `${API_BASE}/proxy?url=${encodeURIComponent(embed.embed_url)}`;
+    embedHtml = `<iframe src="${proxied}" referrerpolicy="no-referrer"></iframe>`;
+  } else {
+    embedHtml = `<div class="placeholder">Встроенный просмотр для этого аэропорта недоступен.<br><br>Открой чарты по ссылкам выше ↗</div>`;
+  }
+  viewer.innerHTML = linksHtml + embedHtml;
+}
+
+/* ================= WEATHER ================= */
+async function renderWeather(dep, arr, alt) {
+  const put = async (id, icao) => {
+    const el = $(id);
+    el.textContent = "loading...";
+    try {
+      const res = await fetch(`${API_BASE}/weather?icao=${encodeURIComponent(icao)}`);
+      const data = await res.json();
+      el.textContent = data.metar || "no data";
+    } catch (e) {
+      el.textContent = "error: " + e.message;
+    }
+  };
+  await Promise.all([put("wx-dep",dep), put("wx-arr",arr), put("wx-alt",alt)]);
+}
+
+/* ================= OFP ================= */
+function renderOFP(data) {
+  if (data.ofp_text) { setOFP(data.ofp_text, false); return; }
+  setOFP("// no ofp_text in response", true);
+}
+
+/* ================= MAIN ================= */
 async function calc() {
   const dep = ($("dep").value || "").trim().toUpperCase();
   const arr = ($("arr").value || "").trim().toUpperCase();
@@ -376,7 +439,15 @@ async function calc() {
   $("dlBtn").disabled = true;
   setOFP("// Generating flight plan...\n// Querying backend...", false);
 
-  const url = `${API_BASE}/calculate?dep=${encodeURIComponent(dep)}&arr=${encodeURIComponent(arr)}&ac=${encodeURIComponent(ac)}`;
+  // Догружаем полосы, если ещё не успели
+  await refreshRunways();
+
+  const depRwy = $("depRwy").value || "";
+  const arrRwy = $("arrRwy").value || "";
+
+  let url = `${API_BASE}/calculate?dep=${encodeURIComponent(dep)}&arr=${encodeURIComponent(arr)}&ac=${encodeURIComponent(ac)}`;
+  if (depRwy) url += `&dep_rwy=${encodeURIComponent(depRwy)}`;
+  if (arrRwy) url += `&arr_rwy=${encodeURIComponent(arrRwy)}`;
 
   try {
     const res = await fetch(url, { method: "GET" });
@@ -385,53 +456,46 @@ async function calc() {
     try { data = JSON.parse(raw); } catch (_) { data = null; }
 
     if (!res.ok) {
-      const detail = (data && (data.detail || data.message || data.error)) || raw.slice(0, 400) || res.statusText;
+      const detail = (data && (data.detail || data.message)) || raw.slice(0,400) || res.statusText;
       throw new Error(`HTTP ${res.status} — ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
     }
-    if (!data || typeof data !== "object") {
-      throw new Error("Backend returned non-JSON: " + raw.slice(0, 200));
-    }
+    if (!data || typeof data !== "object") throw new Error("Non-JSON response: " + raw.slice(0,200));
 
     renderOFP(data);
 
-    // route source badge
     const srcEl = $("routeSource");
     srcEl.className = "src-" + (data.route_source || "gc");
-    srcEl.textContent = "Route: " + (data.route_source || "?").toUpperCase();
-    if (data.airports_count) $("aptCount").textContent = "OFP v0.3 · " + data.airports_count + " apts";
+    srcEl.textContent = "Route: " + (data.route_source || "?").toUpperCase()
+      + (data.dep_rwy ? ` · RWY ${data.dep_rwy}→${data.arr_rwy || "?"}` : "");
+    if (data.airports_count) $("aptCount").textContent = "OFP v0.4 · " + data.airports_count + " apts";
 
-    // charts
-    renderCharts(data.charts);
+    renderChartsList(data.charts);
+    renderWeather(dep, arr, data.alt_id || arr);
 
-    // map
     clearLayers();
 
     if (Array.isArray(data.path) && data.path.length >= 2) {
       addRouteLine(data.path);
       addAirport(data.path[0][0], data.path[0][1], dep);
-      addAirport(data.path[data.path.length - 1][0], data.path[data.path.length - 1][1], arr);
+      addAirport(data.path[data.path.length-1][0], data.path[data.path.length-1][1], arr);
     }
 
     if (Array.isArray(data.waypoints)) {
       data.waypoints.forEach(w => {
-        if (typeof w.lon === "number" && typeof w.lat === "number") {
-          // Не дублируем аэропорты как waypoints
-          if (w.id !== dep && w.id !== arr && w.id !== data.alt_id) {
-            addWaypoint(w.lon, w.lat, w.id);
-          }
-        }
+        if (typeof w.lon !== "number" || typeof w.lat !== "number") return;
+        if (w.id === dep || w.id === arr || w.id === data.alt_id) return;
+        addWaypoint(w.lon, w.lat, w.id);
       });
     }
 
     if (typeof data.alt_lat === "number" && typeof data.alt_lon === "number") {
-      const last = data.path && data.path[data.path.length - 1];
+      const last = data.path && data.path[data.path.length-1];
       if (last) addAlternateLine(last, [data.alt_lon, data.alt_lat]);
       addAirport(data.alt_lon, data.alt_lat, data.alt_id || "ALTN");
     }
 
     fitToAll();
     $("dlBtn").disabled = false;
-
   } catch (err) {
     console.error(err);
     setOFP("// ERROR: Failed to generate flight plan.\n// " + (err && err.message ? err.message : String(err)), true);
@@ -443,8 +507,12 @@ async function calc() {
 function downloadPln() {
   const dep = ($("dep").value || "").trim().toUpperCase();
   const arr = ($("arr").value || "").trim().toUpperCase();
+  const depRwy = $("depRwy").value || "";
+  const arrRwy = $("arrRwy").value || "";
   if (!dep || !arr) { setOFP("// ERROR: dep and arr required.", true); return; }
-  const url = `${API_BASE}/download_pln?dep=${encodeURIComponent(dep)}&arr=${encodeURIComponent(arr)}`;
+  let url = `${API_BASE}/download_pln?dep=${encodeURIComponent(dep)}&arr=${encodeURIComponent(arr)}`;
+  if (depRwy) url += `&dep_rwy=${encodeURIComponent(depRwy)}`;
+  if (arrRwy) url += `&arr_rwy=${encodeURIComponent(arrRwy)}`;
   const a = document.createElement("a");
   a.href = url;
   a.download = `${dep}-${arr}.pln`;
@@ -453,9 +521,12 @@ function downloadPln() {
   document.body.removeChild(a);
 }
 
-window.addEventListener("load", () => { setTimeout(() => calc(), 300); });
+/* ================= BOOT ================= */
+window.addEventListener("load", () => {
+  setTimeout(() => calc(), 300);
+});
 
-["dep", "arr", "pax", "cargo"].forEach(id => {
+["dep", "arr"].forEach(id => {
   const el = $(id);
   if (!el) return;
   el.addEventListener("keydown", (e) => {
@@ -463,6 +534,5 @@ window.addEventListener("load", () => { setTimeout(() => calc(), 300); });
   });
 });
 </script>
-
 </body>
 </html>
