@@ -48,9 +48,10 @@
     <script src="https://unpkg.com"></script>
     <script>
         const map = L.map("map").setView([55.75, 37.62], 5);
-        // Используем темную тему карт для соответствия стилю
-        L.tileLayer('https://{s}://{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; OpenStreetMap &copy; CARTO'
+        
+        // Стабильная подложка OpenStreetMap, которая никогда не выдает черный экран
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
         
         let r1 = null, r2 = null, m = [];
@@ -84,7 +85,7 @@
                 const mAlt = L.marker([data.alt_lat, data.alt_lon]).addTo(map).bindPopup("ALTN: " + data.alt_id);
                 m.push(mAlt);
                 const group = new L.featureGroup([r1, r2]);
-                map.fitBounds(group.getBounds(), {padding: [30, 30]});
+                map.fitBounds(group.getBounds(), {padding: 50});
             } catch (e) {
                 console.log(e)
             }
