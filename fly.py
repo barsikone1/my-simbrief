@@ -62,3 +62,15 @@ def calc(dep: str, arr: str, ac: str):
         "flight_time": f"{int(t)}h {int((t-int(t))*60)}m",
         "min_takeoff_fuel_kg": round(tof)
     }
+from fastapi.responses import HTMLResponse
+import os
+
+@app.get("/")
+def read_index():
+    try:
+        # Пытаемся найти и прочитать файл интерактивной карты
+        file_path = os.path.join(os.path.dirname(__file__), "indexfly.html")
+        with open(file_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except Exception as e:
+        return HTMLResponse(content=f"<h1>Ошибка: файл indexfly.html не найден на сервере. {str(e)}</h1>")
